@@ -24,8 +24,12 @@ export function deleteAccount(id: string | number): AxiosPromise<void> {
   return request({ url: `/erp/finance/accounts/${id}`, method: 'delete' });
 }
 
-/** 启用账户下拉（收付款/其他收支页面复用） */
-export function accountOptions(): AxiosPromise<FinAccountVO[]> {
+/** 最小账户选项；此接口不授予余额权限，也不携带余额/账户号。 */
+export interface FinAccountOption {
+  id: string | number;
+  name: string;
+}
+export function accountOptions(): AxiosPromise<FinAccountOption[]> {
   return request({ url: '/erp/finance/accounts/options', method: 'get' });
 }
 

@@ -25,8 +25,12 @@
               />
             </t-form-item>
             <div class="erp-filter-actions">
-              <t-button theme="primary" @click="handleQuery"><template #icon><SearchIcon /></template>搜索</t-button>
-              <t-button theme="default" variant="outline" @click="resetQuery"><template #icon><RefreshIcon /></template>重置</t-button>
+              <t-button theme="primary" @click="handleQuery"
+                ><template #icon><SearchIcon /></template>搜索</t-button
+              >
+              <t-button theme="default" variant="outline" @click="resetQuery"
+                ><template #icon><RefreshIcon /></template>重置</t-button
+              >
             </div>
           </t-form>
         </t-card>
@@ -100,7 +104,13 @@
         </template>
       </t-table>
 
-      <pagination v-if="total > 0" v-model:total="total" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" @pagination="getList" />
+      <pagination
+        v-if="total > 0"
+        v-model:total="total"
+        v-model:page="queryParams.pageNum"
+        v-model:limit="queryParams.pageSize"
+        @pagination="getList"
+      />
     </div>
 
     <!-- 添加或修改角色对话框 -->

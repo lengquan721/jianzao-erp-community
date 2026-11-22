@@ -134,6 +134,7 @@ import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { DeleteIcon, Edit1Icon, PlusIcon, RefreshIcon, SearchIcon } from 'tdesign-icons-vue-next';
+import { sanitizeNoticeHtml } from '@/components/Editor/sanitizeHtml';
 
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
 const { sys_notice_status, sys_notice_type } = toRefs<any>(proxy?.useDict('sys_notice_status', 'sys_notice_type'));
@@ -243,7 +244,7 @@ const handleUpdate = async (row?: NoticeVO) => {
   reset();
   const noticeId = row?.noticeId || ids.value[0];
   const { data } = await getNotice(noticeId);
-  Object.assign(form.value, data);
+  Object.assign(form.value, data, { noticeContent: sanitizeNoticeHtml(data.noticeContent) });
   dialog.visible = true;
   dialog.title = '修改公告';
 };

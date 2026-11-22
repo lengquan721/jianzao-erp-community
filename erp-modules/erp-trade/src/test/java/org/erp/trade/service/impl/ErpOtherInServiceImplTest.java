@@ -24,6 +24,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -31,8 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -67,8 +70,22 @@ class ErpOtherInServiceImplTest {
 
     private ErpOtherInServiceImpl service;
 
+    /** CAS 状态写入记录（setUp 注册桩时填充） */
+    private List<String> casStatuses;
+
     @BeforeEach
     void setUp() {
+        casStatuses = new ArrayList<>();
+        lenient().when(otherInMapper.update(isNull(), any(Wrapper.class))).thenAnswer(inv -> {
+            com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ErpOtherIn> wrapper = inv.getArgument(1);
+            Object status = wrapper.getParamNameValuePairs().values().stream()
+                .filter(v -> v instanceof String && List.of("CONFIRMED", "DRAFT", "VOID").contains(v))
+                .findFirst().orElse(null);
+            if (status != null) {
+                casStatuses.add((String) status);
+            }
+            return 1;
+        });
         service = new ErpOtherInServiceImpl(otherInMapper, itemMapper, productMapper,
             inventoryService, productService, warehouseService, sequenceService);
         when(warehouseService.defaultWarehouseId()).thenReturn(1L);
@@ -86,6 +103,7 @@ class ErpOtherInServiceImplTest {
     void confirm_inboundsAtEnteredUnitCost_noLedger() {
         ErpOtherIn head = head("DRAFT");
         when(otherInMapper.selectById(200L)).thenReturn(head);
+        when(otherInMapper.lockById(200L)).thenReturn(head);
         when(itemMapper.selectList(any(Wrapper.class))).thenReturn(List.of(itemRow("5", "8.0000")));
 
         service.confirm(200L);
@@ -102,6 +120,7 @@ class ErpOtherInServiceImplTest {
     void insertDraft_persistsEnteredCost_andAmountTotal() {
         ErpOtherInBo bo = bo(new BigDecimal("3"), new BigDecimal("12.5000"));
         when(otherInMapper.selectById(200L)).thenReturn(head("DRAFT"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("DRAFT"));
         when(itemMapper.selectList(any(Wrapper.class))).thenReturn(List.of(itemRow("3", "12.5000")));
 
         service.insert(bo);
@@ -140,6 +159,7 @@ class ErpOtherInServiceImplTest {
     void withdraw_reversesStock_backToDraft() {
         ErpOtherIn head = head("CONFIRMED");
         when(otherInMapper.selectById(200L)).thenReturn(head);
+        when(otherInMapper.lockById(200L)).thenReturn(head);
 
         service.withdraw(200L);
 
@@ -152,18 +172,19 @@ class ErpOtherInServiceImplTest {
     void voidConfirmed_firstWithdrawsThenVoids() {
         ErpOtherIn head = head("CONFIRMED");
         when(otherInMapper.selectById(200L)).thenReturn(head);
+        when(otherInMapper.lockById(200L)).thenReturn(head);
         when(itemMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
 
         service.voidBill(200L);
 
-        ArgumentCaptor<ErpOtherIn> captor = ArgumentCaptor.forClass(ErpOtherIn.class);
-        verify(otherInMapper, org.mockito.Mockito.atLeastOnce()).updateById(captor.capture());
-        assertEquals("VOID", captor.getValue().getStatus());
+        List<String> statuses = captureCasStatus();
+        assertTrue(statuses.contains("VOID"), "期望 CAS 写入 VOID，实际: " + statuses);
     }
 
     @Test
     void voidAlreadyVoid_rejected() {
         when(otherInMapper.selectById(200L)).thenReturn(head("VOID"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("VOID"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(200L));
         assertTrue(ex.getMessage().contains("已作废"));
@@ -172,6 +193,7 @@ class ErpOtherInServiceImplTest {
     @Test
     void voidDraft_rejectedWithDeleteHint() {
         when(otherInMapper.selectById(200L)).thenReturn(head("DRAFT"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("DRAFT"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(200L));
         assertEquals(40902, ex.getCode());
@@ -181,6 +203,7 @@ class ErpOtherInServiceImplTest {
     @Test
     void deleteDraft_deletesItemsAndHead() {
         when(otherInMapper.selectById(200L)).thenReturn(head("DRAFT"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("DRAFT"));
 
         service.deleteDraft(200L);
 
@@ -191,6 +214,7 @@ class ErpOtherInServiceImplTest {
     @Test
     void deleteDraft_nonDraftRejected40902() {
         when(otherInMapper.selectById(200L)).thenReturn(head("CONFIRMED"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("CONFIRMED"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(200L));
         assertEquals(40902, ex.getCode());
@@ -200,6 +224,7 @@ class ErpOtherInServiceImplTest {
     @Test
     void update_confirmedRejected40902() {
         when(otherInMapper.selectById(200L)).thenReturn(head("CONFIRMED"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("CONFIRMED"));
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.update(200L, bo(new BigDecimal("1"), new BigDecimal("10"))));
@@ -209,6 +234,7 @@ class ErpOtherInServiceImplTest {
     @Test
     void confirm_nonDraftRejected40902() {
         when(otherInMapper.selectById(200L)).thenReturn(head("CONFIRMED"));
+        when(otherInMapper.lockById(200L)).thenReturn(head("CONFIRMED"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.confirm(200L));
         assertEquals(40902, ex.getCode());
@@ -223,6 +249,14 @@ class ErpOtherInServiceImplTest {
     }
 
     // ---------- 辅助 ----------
+
+    /**
+     * CAS 状态写入记录：update(null, UpdateWrapper) 带 status 条件更新，不再走 updateById。
+     * 桩在 setUp 中注册（casStatuses 由 setUp 初始化），测试只需断言其中出现过的状态。
+     */
+    private List<String> captureCasStatus() {
+        return casStatuses;
+    }
 
     private ErpOtherInBo bo(BigDecimal qty, BigDecimal unitCost) {
         ErpOtherInBo bo = new ErpOtherInBo();

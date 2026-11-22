@@ -11,15 +11,16 @@
  * - change：选中/清空后回传完整 ErpProductVO（qtyScale、purchasePrice、costPrice 等供开单页使用）
  */
 import { computed, ref, watch } from 'vue';
-import { getProduct, productCategoryOptions, productOptions } from '@/api/erp/master';
-import { listStockBalances } from '@/api/erp/stock';
+import { listAllProductCategories, productOptions, productOptionsByIds } from '@/api/erp/master';
+import { listStockQuantities } from '@/api/erp/stock';
 import { ERP_PRODUCT_TYPE, ERP_QTY_SCALE_OPTIONS } from '@/api/erp/enums';
-import type { ErpId, ErpProductCategoryVO, ErpProductType, ErpProductVO } from '@/api/erp/types';
+import type { ErpAmount, ErpId, ErpProductCategoryVO, ErpProductType, ErpProductVO } from '@/api/erp/types';
 import { formatMoney, formatQtyTrim } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 import useDialog from '@/hooks/useDialog';
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import StatusTag from '@/components/erp/StatusTag.vue';
+import { loadProductForRestore } from './productRestoreLoader';
 import { CloseCircleFilledIcon, SearchIcon } from 'tdesign-icons-vue-next';
 
 const props = withDefaults(
@@ -32,7 +33,7 @@ const props = withDefaults(
     disabled?: boolean;
     /** 允许清空 */
     clearable?: boolean;
-    /** 多选：弹窗显示勾选列，确认后 modelValue 为 ID 数组；多选模式不分页，表格内滚动 */
+    /** 多选：弹窗显示勾选列，跨页保留勾选，确认后 modelValue 为 ID 数组 */
     multiple?: boolean;
     /** 弹窗展示库存列（无 erp:stock:list 权限时自动隐藏） */
     showStock?: boolean;
@@ -82,18 +83,23 @@ const typeOptions = computed(() => Object.entries(ERP_PRODUCT_TYPE).map(([value,
 const categories = ref<ErpProductCategoryVO[]>([]);
 const categoriesLoaded = ref(false);
 
-/** 库存：productId -> qty；无权限或加载失败则不展示库存列 */
-const stockMap = ref<Record<string, number>>({});
-const stockLoaded = ref(false);
-const stockAvailable = ref(false);
+/** 当前页的全仓数量；不把无快照/加载失败显示成 0。 */
+const stockMap = ref(new Map<string, ErpAmount>());
+const showStockColumn = computed(() => props.showStock && checkPermi(['erp:stock:list']));
 
+const PAGE_SIZE = 10;
 const pageNum = ref(1);
-const pageSize = ref(10);
-/** 多选已勾选 ID（受控）：t-table 的 selected-row-keys 只认这个数组，不再从表格实例读 */
-const checkedIds = ref<ErpId[]>([]);
-
-/** 多选：弹窗内实时勾选数（modelValue 要等「确定」才更新，不能拿来判断按钮可用性） */
-const pickingCount = computed(() => checkedIds.value.length);
+const nextPageNum = ref<number | null>(null);
+const queryFailed = ref(false);
+let pageRequest = 0;
+let submittedKeyword = '';
+let restoreRequest = 0;
+const restoring = ref(false);
+const restoreFailed = ref(false);
+/** 跨页勾选以商品 ID 归一化为键，但对外仍回传原始 ID 与完整 VO。 */
+const checked = ref(new Map<string, ErpProductVO>());
+const checkedIds = computed(() => list.value.filter((row) => checked.value.has(String(row.id))).map((row) => row.id));
+const pickingCount = computed(() => checked.value.size);
 
 /** 多选已选 ID 集合，触发器文案与「确定」按钮可用性都基于它 */
 const pickedIds = computed<ErpId[]>(() => (props.multiple && Array.isArray(props.modelValue) ? props.modelValue : []));
@@ -106,30 +112,7 @@ const label = computed(() => {
   return `${p.code} ${p.name}${p.spec ? ' / ' + p.spec : ''}`;
 });
 
-/** 类型在服务端已过滤时不再二次过滤 */
-const filtered = computed(() => {
-  if (props.type || !typeFilter.value) return list.value;
-  return list.value.filter((item) => item.type === typeFilter.value);
-});
-
-const total = computed(() => filtered.value.length);
-
-/**
- * 表格数据
- *
- * 单选按 10 条客户端分页；多选不分页（表格内滚动），
- * 因为跨页勾选需要 reserve-selection，确认时容易丢页外已选行，得不偿失。
- */
-const pagedList = computed(() => {
-  if (props.multiple) return filtered.value;
-  const start = (pageNum.value - 1) * pageSize.value;
-  return filtered.value.slice(start, start + pageSize.value);
-});
-
-/** 多选模式「确定」是否可用：按弹窗内实时勾选数判断 */
-const canConfirm = computed(() => (props.multiple ? pickingCount.value > 0 : !!currentRow.value));
-
-const showStockColumn = computed(() => props.showStock && stockAvailable.value);
+const canConfirm = computed(() => (props.multiple ? !restoring.value && !restoreFailed.value && pickingCount.value > 0 : !!currentRow.value));
 
 /** 单选当前高亮行：t-table 用 active-row-keys 受控（多选态不高亮） */
 const activeRowKeys = computed<Array<string | number>>(() => (props.multiple || !currentRow.value ? [] : [currentRow.value.id]));
@@ -173,70 +156,75 @@ const columns = computed<any[]>(() => {
  */
 const qtyScaleText = (scale?: number | null): string => ERP_QTY_SCALE_OPTIONS.find((item) => item.value === Number(scale ?? 0))?.label ?? '整数';
 
-/** 分类筛选条：仅首次打开时加载 */
+/** 只为分类标签加载完整字典。 */
 const loadCategories = async () => {
   if (!props.showCategoryFilter || categoriesLoaded.value) return;
   categoriesLoaded.value = true;
   try {
-    const res = await productCategoryOptions();
-    categories.value = res.data ?? [];
+    categories.value = await listAllProductCategories();
   } catch {
-    categories.value = [];
+    categoriesLoaded.value = false;
   }
 };
 
-/**
- * 加载库存用于展示
- *
- * 无 erp:stock:list 权限时直接跳过，避免每次打开弹窗都弹一次 403 提示。
- */
-const loadStock = async () => {
-  if (!props.showStock || stockLoaded.value) return;
-  if (!checkPermi(['erp:stock:list'])) {
-    stockLoaded.value = true;
-    return;
-  }
-  try {
-    const res = await listStockBalances({});
-    const map: Record<string, number> = {};
-    // 库存接口按「产品+仓库」逐行返回，选择器展示全仓合计，故累加而非覆盖
-    (res.data ?? []).forEach((row) => {
-      const key = String(row.productId);
-      map[key] = (map[key] ?? 0) + Number(row.qty ?? 0);
-    });
-    stockMap.value = map;
-    stockAvailable.value = true;
-  } catch {
-    stockAvailable.value = false;
-  } finally {
-    stockLoaded.value = true;
-  }
-};
-
-/** 按当前关键词/分类/类型检索商品；请求失败按空结果处理（错误提示由请求拦截器统一弹出） */
-const load = async () => {
+/** 翻页和筛选都发服务端查询，只有本页商品的 ID 会用于查全仓库存。 */
+const loadPage = async (page: number) => {
+  const seq = ++pageRequest;
+  pageNum.value = page;
   loading.value = true;
+  queryFailed.value = false;
+  list.value = [];
+  stockMap.value = new Map();
+  nextPageNum.value = null;
   try {
-    const res = await productOptions(keyword.value.trim() || undefined, categoryId.value, props.type);
-    list.value = res.data ?? [];
-    pageNum.value = 1;
+    const res = await productOptions({
+      pageNum: page,
+      pageSize: PAGE_SIZE,
+      keyword: submittedKeyword || undefined,
+      categoryId: categoryId.value,
+      type: props.type || typeFilter.value
+    });
+    if (seq !== pageRequest) return;
+    list.value = res.rows;
+    nextPageNum.value = res.hasMore ? (res.nextPageNum ?? null) : null;
+    if (showStockColumn.value && res.rows.length) {
+      void listStockQuantities(res.rows.map((item) => item.id)).then(
+        (quantities) => {
+          if (seq === pageRequest) stockMap.value = new Map(quantities.map((item) => [String(item.productId), item.qty]));
+        },
+        () => {
+          /* 保留未知库存，不阻塞选品。 */
+        }
+      );
+    }
   } catch {
-    list.value = [];
+    if (seq === pageRequest) queryFailed.value = true;
   } finally {
-    loading.value = false;
+    if (seq === pageRequest) loading.value = false;
   }
 };
 
-/**
- * 多选回显：把已选 ID 收敛到当前列表内的行（商品被删或类型不符时丢弃）
- *
- * t-table 勾选为受控模式，直接给 checkedIds 赋值即可，不再操作表格实例。
- */
-const restoreSelection = () => {
-  if (!props.multiple) return;
-  const idSet = new Set(pickedIds.value.map((id) => String(id)));
-  // 回填行自身的 id 作为勾选 key：父级传字符串、列表 id 为数字时，t-table 内部的严格 includes 才不会落空
-  checkedIds.value = list.value.filter((row) => idSet.has(String(row.id))).map((row) => row.id);
+const search = () => {
+  submittedKeyword = keyword.value.trim();
+  return loadPage(1);
+};
+
+/** 按 ID 恢复页外/停用已选商品；回显失败不允许静默覆盖原选择。 */
+const restoreSelection = async () => {
+  const seq = ++restoreRequest;
+  checked.value = new Map();
+  restoreFailed.value = false;
+  restoring.value = pickedIds.value.length > 0;
+  if (!restoring.value) return;
+  try {
+    const products = await productOptionsByIds(pickedIds.value);
+    if (seq !== restoreRequest) return;
+    checked.value = new Map(products.filter((item) => !props.type || item.type === props.type).map((item) => [String(item.id), item]));
+  } catch {
+    if (seq === restoreRequest) restoreFailed.value = true;
+  } finally {
+    if (seq === restoreRequest) restoring.value = false;
+  }
 };
 
 /** 打开弹窗：重置检索条件并拉取数据 */
@@ -246,36 +234,46 @@ const open = async () => {
   categoryId.value = undefined;
   typeFilter.value = undefined;
   currentRow.value = selected.value;
-  checkedIds.value = [];
   productDialog.openDialog();
-  await Promise.all([loadCategories(), loadStock(), load()]);
-  restoreSelection();
+  await Promise.all([loadCategories(), search(), restoreSelection()]);
 };
 
-/** 勾选变化：TDesign 回传当前全部已选行 key（受控），直接同步给 checkedIds */
-const handleSelectChange = (keys: Array<string | number>) => {
-  checkedIds.value = keys;
+/** 当前页的勾选改变只更新当前页，页外选择继续保留。 */
+const handleSelectChange = (keys: ErpId[]) => {
+  if (restoring.value || restoreFailed.value) return;
+  const keySet = new Set(keys.map(String));
+  const next = new Map(checked.value);
+  for (const row of list.value) {
+    const id = String(row.id);
+    if (keySet.has(id)) next.set(id, row);
+    else next.delete(id);
+  }
+  checked.value = next;
 };
 
-/** 切换分类 */
-const selectCategory = async (id?: ErpId) => {
+const selectCategory = (id?: ErpId) => {
   if (String(categoryId.value ?? '') === String(id ?? '')) return;
   categoryId.value = id;
-  await load();
+  void search();
 };
 
-/** 类型切换（仅 props.type 未限定时可用） */
-const selectType = (value?: ErpProductType) => {
-  typeFilter.value = value || undefined;
-  pageNum.value = 1;
+const selectType = (value: unknown) => {
+  typeFilter.value = value === 'PRODUCT' || value === 'MATERIAL' ? value : undefined;
+  void search();
 };
+
+watch(
+  () => props.type,
+  () => {
+    if (productDialog.visible.value) void search();
+  }
+);
 
 /** 确认选择：单选回传商品对象，多选回传商品数组，开单页据此带出单位/精度/默认价 */
 const confirmPick = () => {
   if (props.multiple) {
-    // 行 key 是原始 id，逐行 String() 比对：不能先整体 join 再 includes，否则字符串/数字类型不一致会筛空
-    const rows = list.value.filter((r) => checkedIds.value.some((k) => String(k) === String(r.id)));
-    if (!rows.length) return;
+    if (!canConfirm.value) return;
+    const rows = [...checked.value.values()];
     emit(
       'update:modelValue',
       rows.map((row) => row.id)
@@ -295,9 +293,13 @@ const confirmPick = () => {
 /** 单击行：多选切换勾选；单选只高亮，避免误触直接改单（改单会触发开单页重算默认价） */
 const handleRowClick = ({ row }: { row: ErpProductVO }) => {
   if (props.multiple) {
-    // 行点击不触发 select-change，受控勾选在这里按 id 做数组 toggle
-    const exists = checkedIds.value.some((k) => String(k) === String(row.id));
-    checkedIds.value = exists ? checkedIds.value.filter((k) => String(k) !== String(row.id)) : [...checkedIds.value, row.id];
+    if (restoring.value || restoreFailed.value) return;
+    // 行点击不触发 select-change，受控勾选在这里按 id 做 Map toggle
+    const next = new Map(checked.value);
+    const key = String(row.id);
+    if (next.has(key)) next.delete(key);
+    else next.set(key, row);
+    checked.value = next;
     return;
   }
   currentRow.value = row;
@@ -313,7 +315,9 @@ const handleRowDblclick = ({ row }: { row: ErpProductVO }) => {
 /** 清空选择 */
 const clear = () => {
   if (props.multiple) {
-    checkedIds.value = [];
+    checked.value = new Map();
+    restoring.value = false;
+    restoreFailed.value = false;
     emit('update:modelValue', []);
     emit('change-multiple', []);
     return;
@@ -323,27 +327,21 @@ const clear = () => {
   emit('change', undefined);
 };
 
-// 外部改值（编辑回显、程序赋值）时同步选中项：先查已加载列表，再回源单商品接口。
-// 多选模式的触发器只显示数量，不需要解析商品对象，跳过。
+// 编辑回显不依赖当前页或状态过滤；忽略上一个商品的迟到结果。
 watch(
   () => props.modelValue,
-  async (value) => {
+  async (value, _old, onCleanup) => {
     if (props.multiple) return;
-    if (value === null || value === undefined || value === '' || Array.isArray(value)) {
-      selected.value = undefined;
-      return;
-    }
     if (selected.value && String(selected.value.id) === String(value)) return;
-    const hit = list.value.find((item) => String(item.id) === String(value));
-    if (hit) {
-      selected.value = hit;
-      return;
-    }
+    selected.value = list.value.find((item) => String(item.id) === String(value));
+    if (selected.value || value == null || value === '' || Array.isArray(value)) return;
+    let current = true;
+    onCleanup(() => (current = false));
     try {
-      const res = await getProduct(value);
-      selected.value = res.data;
+      const product = await loadProductForRestore(value);
+      if (current) selected.value = product;
     } catch {
-      selected.value = undefined;
+      // 保留原 ID，不擅自触发 change、重算开单价格等字段。
     }
   },
   { immediate: true }
@@ -373,7 +371,7 @@ defineExpose({ open });
       :destroy-on-close="true"
     >
       <div class="flex flex-wrap items-center gap-3 mb-3">
-        <t-input v-model="keyword" placeholder="编码 / 名称 / 规格" clearable style="width: 260px" @enter="load" @clear="load">
+        <t-input v-model="keyword" placeholder="编码 / 名称 / 规格" clearable style="width: 260px" @enter="search" @clear="search">
           <template #prefix-icon><SearchIcon /></template>
         </t-input>
         <t-select
@@ -385,11 +383,14 @@ defineExpose({ open });
           :options="typeOptions"
           @change="selectType"
         />
-        <t-button theme="primary" @click="load">
+        <t-button theme="primary" @click="search">
           <template #icon><SearchIcon /></template>
           搜索
         </t-button>
-        <span class="erp-text-secondary"> 共 {{ total }} 个商品{{ multiple ? '，点击行勾选，再点「确定」' : '，点击行选中、双击直接确定' }} </span>
+        <span class="erp-text-secondary"
+          >第 {{ pageNum }} 页{{ nextPageNum != null ? '，可继续翻页' : ''
+          }}{{ multiple ? `，已选 ${pickingCount} 个，点击行勾选` : '，点击行选中、双击直接确定' }}</span
+        >
       </div>
 
       <!-- 分类筛选：与商品资料同一套分类，快速缩小范围 -->
@@ -403,7 +404,7 @@ defineExpose({ open });
       <t-table
         class="erp-table"
         row-key="id"
-        :data="pagedList"
+        :data="list"
         :columns="columns"
         :loading="loading"
         bordered
@@ -429,15 +430,19 @@ defineExpose({ open });
           <!-- 复用商品资料的发票类型映射：不含税即不含税价，专票/普票为含税价 -->
           <StatusTag kind="tax" :value="row.taxType" />
         </template>
-        <template #stock="{ row }">{{ formatQtyTrim(stockMap[String(row.id)]) }}</template>
+        <template #stock="{ row }">{{ stockMap.has(String(row.id)) ? formatQtyTrim(stockMap.get(String(row.id))) : '—' }}</template>
         <template #purchasePrice="{ row }">{{ formatMoney(row.purchasePrice) }}</template>
         <template #costPrice="{ row }">{{ formatMoney(row.costPrice) }}</template>
         <template #empty>
-          <span class="erp-text-secondary">没有匹配的商品</span>
+          <span class="erp-text-secondary">{{ queryFailed ? '加载失败，请重试' : '没有匹配的商品' }}</span>
         </template>
       </t-table>
-
-      <pagination v-if="!multiple" v-show="total > 0" v-model:page="pageNum" v-model:limit="pageSize" :total="total" />
+      <div class="mt-2 flex justify-end gap-2">
+        <t-button size="small" variant="outline" :disabled="loading || pageNum <= 1" @click="loadPage(pageNum - 1)">上一页</t-button>
+        <t-button size="small" variant="outline" :disabled="loading || nextPageNum == null" @click="loadPage(nextPageNum ?? pageNum)"
+          >下一页</t-button
+        >
+      </div>
 
       <template #footer>
         <div class="flex items-center justify-between">

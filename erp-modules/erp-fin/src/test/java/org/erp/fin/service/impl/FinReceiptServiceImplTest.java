@@ -25,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -32,10 +33,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -65,13 +69,30 @@ class FinReceiptServiceImplTest {
     @Mock
     private org.erp.fin.mapper.FinAccountMapper accountMapper;
 
+    @Mock private org.erp.fin.service.IFinOpeningGuardService openingGuard;
     private FinReceiptServiceImpl service;
+
+    /** CAS 状态写入记录（setUp 注册桩时填充） */
+    private List<String> casStatuses;
 
     private org.erp.fin.domain.FinAccount stubAccount;
 
     @BeforeEach
     void setUp() {
-        service = new FinReceiptServiceImpl(receiptMapper, accountMapper, allocMapper, customerMapper, arApService, sequenceService);
+        casStatuses = new ArrayList<>();
+        lenient().when(receiptMapper.update(any(FinReceipt.class), any(Wrapper.class))).thenReturn(1);
+        lenient().when(receiptMapper.delete(any(Wrapper.class))).thenReturn(1);
+        lenient().when(receiptMapper.update(isNull(), any(Wrapper.class))).thenAnswer(inv -> {
+            com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<FinReceipt> wrapper = inv.getArgument(1);
+            Object status = wrapper.getParamNameValuePairs().values().stream()
+                .filter(v -> v instanceof String && List.of("CONFIRMED", "DRAFT", "VOID").contains(v))
+                .findFirst().orElse(null);
+            if (status != null) {
+                casStatuses.add((String) status);
+            }
+            return 1;
+        });
+        service = new FinReceiptServiceImpl(receiptMapper, accountMapper, allocMapper, customerMapper, arApService, sequenceService, openingGuard);
         stubAccount = new org.erp.fin.domain.FinAccount();
         stubAccount.setId(1L);
         stubAccount.setName("微信");
@@ -80,15 +101,25 @@ class FinReceiptServiceImplTest {
             inv.getArgument(0, FinReceipt.class).setId(100L);
             return 1;
         });
-        when(receiptMapper.updateById(any(FinReceipt.class))).thenReturn(1);
         when(allocMapper.insert(any(FinReceiptAlloc.class))).thenReturn(1);
         when(sequenceService.nextNo("SK")).thenReturn("SK202610310001");
         when(customerMapper.selectById(any())).thenReturn(customer());
         // 核销明细回填来源单号（selectById 走 loadAllocs）时批量查台账来源
-        when(arApService.listSourceInfo(any())).thenReturn(List.of());
+        when(arApService.listSourceInfo(any(), eq("AR"), eq(9L))).thenReturn(List.of());
     }
 
     // ---------- 确认核销 ----------
+
+    @Test
+    void ordinaryReceiptCannotCreateRefundFromClientFlag() {
+        FinReceiptBo bo = receiptBo(9L, "50.00", false);
+        bo.setNegative(true);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.insert(bo));
+
+        assertEquals(40902, ex.getCode());
+        verifyNoInteractions(receiptMapper, allocMapper, sequenceService);
+    }
 
     @Test
     void insertWithConfirm_settlesLedgersInOrder() {
@@ -97,6 +128,7 @@ class FinReceiptServiceImplTest {
             return List.of(allocRow(1L, 5001L, "600.00"), allocRow(2L, 5002L, "400.00"));
         });
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
 
         service.insert(receiptBo(9L, "1000.00", true,
             alloc(5001L, "600.00"), alloc(5002L, "400.00")));
@@ -105,10 +137,8 @@ class FinReceiptServiceImplTest {
         inOrder.verify(arApService).settle(5001L, new BigDecimal("600.00"), "AR", 9L);
         inOrder.verify(arApService).settle(5002L, new BigDecimal("400.00"), "AR", 9L);
 
-        ArgumentCaptor<FinReceipt> headCaptor = ArgumentCaptor.forClass(FinReceipt.class);
-        verify(receiptMapper, org.mockito.Mockito.atLeastOnce()).updateById(headCaptor.capture());
-        FinReceipt confirmed = headCaptor.getValue();
-        assertEquals("CONFIRMED", confirmed.getStatus());
+        List<String> headStatuses = captureCasStatus();
+        assertTrue(headStatuses.contains("CONFIRMED"), "期望 CAS 写入 CONFIRMED，实际: " + headStatuses);
     }
 
     @Test
@@ -122,14 +152,15 @@ class FinReceiptServiceImplTest {
                 alloc(5001L, "600.00"), alloc(5002L, "300.00"))));
         assertTrue(ex.getMessage().contains("必须等于收款金额"));
         // 已 settle 的行不应回滚为提交（事务层负责回滚，这里验证确认状态未写）
-        verify(receiptMapper, never()).updateById(org.mockito.ArgumentMatchers.argThat(
-            (FinReceipt h) -> h != null && "CONFIRMED".equals(h.getStatus())));
+        // 合计校验失败时不得写状态：CAS 未被调用
+        verify(receiptMapper, never()).update(isNull(), any(Wrapper.class));
     }
 
     @Test
     void confirm_emptyAllocations_rejected() {
         FinReceipt head = receiptHead("DRAFT", "500.00");
         when(receiptMapper.selectById(100L)).thenReturn(head);
+        when(receiptMapper.lockById(100L)).thenReturn(head);
         when(allocMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
 
         // 无明细确认应失败（Σ=0 ≠ 500）
@@ -144,28 +175,30 @@ class FinReceiptServiceImplTest {
     void withdraw_unsettlesAllAllocs_backToDraft() {
         FinReceipt head = receiptHead("CONFIRMED", "1000.00");
         when(receiptMapper.selectById(100L)).thenReturn(head);
+        when(receiptMapper.lockById(100L)).thenReturn(head);
         when(allocMapper.selectList(any(Wrapper.class)))
             .thenReturn(List.of(allocRow(1L, 5001L, "600.00"), allocRow(2L, 5002L, "400.00")));
 
         service.withdraw(100L);
 
         InOrder inOrder = inOrder(arApService);
-        inOrder.verify(arApService).unsettle(5001L, new BigDecimal("600.00"));
-        inOrder.verify(arApService).unsettle(5002L, new BigDecimal("400.00"));
+        inOrder.verify(arApService).unsettle(5001L, new BigDecimal("600.00"), "AR", 9L);
+        inOrder.verify(arApService).unsettle(5002L, new BigDecimal("400.00"), "AR", 9L);
         // 撤回保留核销明细，供重新确认复用；物理清理只在作废时发生
         verify(allocMapper, never()).delete(any(Wrapper.class));
-        ArgumentCaptor<FinReceipt> captor = ArgumentCaptor.forClass(FinReceipt.class);
-        verify(receiptMapper).updateById(captor.capture());
-        assertEquals("DRAFT", captor.getValue().getStatus());
+        List<String> captorStatuses = captureCasStatus();
+        assertTrue(captorStatuses.contains("DRAFT"),
+            "期望 CAS 写入 DRAFT，实际: " + captorStatuses);
     }
 
     @Test
     void withdraw_draftRejected40902() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.withdraw(100L));
         assertEquals(40902, ex.getCode());
-        verify(arApService, never()).unsettle(any(), any());
+        verify(arApService, never()).unsettle(any(), any(), any(), any());
     }
 
     /**
@@ -174,6 +207,7 @@ class FinReceiptServiceImplTest {
     @Test
     void withdrawThenReconfirm_reusesKeptAllocations() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
         when(allocMapper.selectList(any(Wrapper.class)))
             .thenReturn(List.of(allocRow(1L, 5001L, "600.00"), allocRow(2L, 5002L, "400.00")));
 
@@ -184,32 +218,35 @@ class FinReceiptServiceImplTest {
         // 重新确认：明细仍在，Σ=1000 与单据金额一致，可再次核销
         FinReceipt head = receiptHead("DRAFT", "1000.00");
         when(receiptMapper.selectById(100L)).thenReturn(head);
+        when(receiptMapper.lockById(100L)).thenReturn(head);
         service.confirm(100L);
 
         verify(arApService).settle(5001L, new BigDecimal("600.00"), "AR", 9L);
         verify(arApService).settle(5002L, new BigDecimal("400.00"), "AR", 9L);
-        ArgumentCaptor<FinReceipt> captor = ArgumentCaptor.forClass(FinReceipt.class);
-        verify(receiptMapper, org.mockito.Mockito.atLeastOnce()).updateById(captor.capture());
-        assertEquals("CONFIRMED", captor.getValue().getStatus());
+        List<String> captorStatuses = captureCasStatus();
+        assertTrue(captorStatuses.contains("CONFIRMED"),
+            "期望 CAS 写入 CONFIRMED，实际: " + captorStatuses);
     }
 
     @Test
     void voidConfirmed_firstWithdrawsThenVoids() {
         FinReceipt head = receiptHead("CONFIRMED", "1000.00");
         when(receiptMapper.selectById(100L)).thenReturn(head);
-        when(allocMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        when(receiptMapper.lockById(100L)).thenReturn(head);
+        when(allocMapper.selectList(any(Wrapper.class))).thenReturn(List.of(allocRow(1L, 5001L, "1000.00")));
 
         service.voidBill(100L);
 
-        verify(arApService, never()).unsettle(any(), any());
-        ArgumentCaptor<FinReceipt> captor = ArgumentCaptor.forClass(FinReceipt.class);
-        verify(receiptMapper, org.mockito.Mockito.atLeastOnce()).updateById(captor.capture());
-        assertEquals("VOID", captor.getValue().getStatus());
+        verify(arApService).unsettle(5001L, new BigDecimal("1000.00"), "AR", 9L);
+        List<String> captorStatuses = captureCasStatus();
+        assertTrue(captorStatuses.contains("VOID"),
+            "期望 CAS 写入 VOID，实际: " + captorStatuses);
     }
 
     @Test
     void voidAlreadyVoid_rejected() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("VOID", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("VOID", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(100L));
         assertTrue(ex.getMessage().contains("已作废"));
@@ -223,7 +260,7 @@ class FinReceiptServiceImplTest {
         source.setArApId(5001L);
         source.setSourceType("SALE");
         source.setSourceNo("XS202611010001");
-        when(arApService.listSourceInfo(any())).thenReturn(List.of(source));
+        when(arApService.listSourceInfo(any(), eq("AR"), eq(9L))).thenReturn(List.of(source));
 
         FinReceiptVo vo = service.selectById(100L);
 
@@ -236,11 +273,12 @@ class FinReceiptServiceImplTest {
     void voidDraft_rejected40902_pointToDelete() {
         // 草稿不再走作废：作废会把草稿固化成终态单据，草稿应改走删除
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(100L));
         assertEquals(40902, ex.getCode());
         assertTrue(ex.getMessage().contains("草稿单据请使用删除"));
-        verify(receiptMapper, never()).updateById(any(FinReceipt.class));
+        verify(receiptMapper, never()).update(isNull(), any(Wrapper.class));
     }
 
     // ---------- 草稿删除（逻辑删除） ----------
@@ -248,19 +286,21 @@ class FinReceiptServiceImplTest {
     @Test
     void deleteDraft_draft_deletesHeadAndAllocs() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("DRAFT", "1000.00"));
 
         service.deleteDraft(100L);
 
         // 明细一并逻辑删除，主表逻辑删除（不物理 DELETE）
         verify(allocMapper).delete(any(Wrapper.class));
-        verify(receiptMapper).deleteById(100L);
+        verify(receiptMapper).delete(any(Wrapper.class));
         // 草稿未核销过台账，不应触发反核销
-        verify(arApService, never()).unsettle(any(), any());
+        verify(arApService, never()).unsettle(any(), any(), any(), any());
     }
 
     @Test
     void deleteDraft_confirmedRejected40902() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(100L));
         assertEquals(40902, ex.getCode());
@@ -271,6 +311,7 @@ class FinReceiptServiceImplTest {
     @Test
     void deleteDraft_voidRejected40902() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("VOID", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("VOID", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(100L));
         assertEquals(40902, ex.getCode());
@@ -280,6 +321,7 @@ class FinReceiptServiceImplTest {
     @Test
     void deleteDraft_missingRejected() {
         when(receiptMapper.selectById(999L)).thenReturn(null);
+        when(receiptMapper.lockById(999L)).thenReturn(null);
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(999L));
         assertTrue(ex.getMessage().contains("不存在"));
@@ -290,6 +332,7 @@ class FinReceiptServiceImplTest {
     @Test
     void update_confirmedRejected40902() {
         when(receiptMapper.selectById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
+        when(receiptMapper.lockById(100L)).thenReturn(receiptHead("CONFIRMED", "1000.00"));
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.update(100L, receiptBo(9L, "1000.00", false)));
@@ -299,11 +342,20 @@ class FinReceiptServiceImplTest {
     @Test
     void selectById_missingRejected() {
         when(receiptMapper.selectById(999L)).thenReturn(null);
+        when(receiptMapper.lockById(999L)).thenReturn(null);
         ServiceException ex = assertThrows(ServiceException.class, () -> service.selectById(999L));
         assertTrue(ex.getMessage().contains("不存在"));
     }
 
     // ---------- 辅助 ----------
+
+    /**
+     * CAS 状态写入记录：update(null, UpdateWrapper) 带 status 条件更新，不再走 updateById。
+     * 桩在 setUp 中注册（casStatuses 由 setUp 初始化），测试只需断言其中出现过的状态。
+     */
+    private List<String> captureCasStatus() {
+        return casStatuses;
+    }
 
     private FinReceiptBo receiptBo(Long customerId, String amount, boolean confirm,
                                    FinReceiptBo.AllocationBo... allocations) {

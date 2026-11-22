@@ -204,11 +204,8 @@ class StOpeningExcelServiceTest {
         vo.setQty(new BigDecimal("100.000"));
         vo.setUnitCost(new BigDecimal("10.5000"));
 
-        ErpWarehouse warehouse = new ErpWarehouse();
-        warehouse.setId(1L);
-        warehouse.setCode("WH001");
-        warehouse.setName("主仓");
-        when(warehouseMapper.selectById(1L)).thenReturn(warehouse);
+        vo.setWarehouseCode("WH001");
+        vo.setWarehouseName("主仓");
 
         List<StOpeningExportVo> exportRows = service.toExportRows(List.of(vo));
 
@@ -218,6 +215,7 @@ class StOpeningExcelServiceTest {
         assertEquals("WH001", export.getWarehouseCode());
         assertEquals("主仓", export.getWarehouseName());
         assertEquals(new BigDecimal("1050.00"), export.getAmount());
+        verify(warehouseMapper, never()).selectById(any());
     }
 
     // ---------- 辅助 ----------

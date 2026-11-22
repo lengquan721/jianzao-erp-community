@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.erp.master.domain.ErpProduct;
+import org.erp.master.domain.bo.MasterOptionQuery;
 import org.erp.master.domain.vo.ErpProductVo;
 
 import java.util.List;
@@ -13,6 +14,29 @@ import java.util.List;
  * 产品 Mapper
  */
 public interface ErpProductMapper extends BaseMapperPlus<ErpProduct, ErpProductVo> {
+
+    // 不按分类联表列排序，分类仍完整回传；不改变管理列表和 Excel 的原查询。
+    String OPTION_SELECT = """
+        <script>
+        select m.id, m.code, m.name, m.spec, m.unit, m.type, m.category_id, m.supplier_id,
+               c.name as categoryName, c.code as categoryCode, c.sort as categorySort,
+               s.name as supplierName, s.code as supplierCode,
+               m.qty_scale, m.cost_price, m.purchase_price, m.tax_type, m.freight,
+               m.min_stock, m.max_stock, m.status, m.remark, m.create_time
+        from md_product m
+        left join md_product_category c on c.id = m.category_id and c.tenant_id = m.tenant_id and c.del_flag = '0'
+        left join md_supplier s on s.id = m.supplier_id and s.tenant_id = m.tenant_id and s.del_flag = '0'
+        """;
+
+    @Select(OPTION_SELECT + MasterOptionSql.FILTER + MasterOptionSql.PRODUCT_SEARCH + """
+        <if test="type != null">and m.type = #{type}</if>
+        <if test="categoryId != null">and m.category_id = #{categoryId}</if>
+        """ + MasterOptionSql.ORDER_START + "m.code, m.id" + MasterOptionSql.LIMIT)
+    List<ErpProductVo> selectOptions(@Param("q") MasterOptionQuery query, @Param("type") String type,
+                                     @Param("categoryId") Long categoryId);
+
+    @Select(OPTION_SELECT + MasterOptionSql.IDS)
+    List<ErpProductVo> selectOptionsByIds(@Param("ids") List<Long> ids);
 
     /**
      * 商品列表联查 SQL：分类与供应商只关联未删除记录，分类被逻辑删除时 categoryName 为 null，

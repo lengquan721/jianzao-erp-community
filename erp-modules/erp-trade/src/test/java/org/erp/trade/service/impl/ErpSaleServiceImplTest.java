@@ -5,6 +5,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.erp.common.sequence.SequenceService;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.master.domain.ErpCustomer;
 import org.erp.master.mapper.ErpCustomerMapper;
 import org.erp.master.mapper.ErpProductMapper;
@@ -15,10 +16,13 @@ import org.erp.trade.domain.ErpSale;
 import org.erp.trade.domain.ErpSaleItem;
 import org.erp.trade.mapper.ErpSaleItemMapper;
 import org.erp.trade.mapper.ErpSaleMapper;
+import org.erp.trade.service.IErpOrderProgressService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -28,11 +32,13 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -40,10 +46,12 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -55,6 +63,8 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 @Tag("dev")
 class ErpSaleServiceImplTest {
+
+    private static final Date CUTOFF_DATE = java.sql.Date.valueOf("2026-01-01");
 
     @Mock
     private ErpSaleMapper saleMapper;
@@ -82,7 +92,9 @@ class ErpSaleServiceImplTest {
     @Mock
     private IFinArApService finArApService;
     @Mock
-    private org.erp.trade.service.IErpOrderProgressService orderProgressService;
+    private IErpOrderProgressService orderProgressService;
+    @Mock
+    private IFinOpeningGuardService openingGuardService;
 
     private ErpSaleServiceImpl service;
 
@@ -90,7 +102,7 @@ class ErpSaleServiceImplTest {
     void setUp() {
         service = new ErpSaleServiceImpl(saleMapper, saleReturnMapper, itemMapper, saleOrderMapper, saleOrderItemMapper,
             productMapper, productService, customerMapper, inventoryService, warehouseService, sequenceService, finArApService,
-            orderProgressService);
+            orderProgressService, openingGuardService);
         when(warehouseService.defaultWarehouseId()).thenReturn(1L);
         when(customerMapper.selectByIds(any())).thenReturn(List.of());
         when(itemMapper.selectList(any())).thenReturn(List.of());
@@ -233,7 +245,7 @@ class ErpSaleServiceImplTest {
         item.setQty(new BigDecimal("2"));
         item.setAmount(new BigDecimal("100.00"));
         when(itemMapper.selectList(any())).thenReturn(List.of(item));
-        when(inventoryService.snapshotCost(301L)).thenReturn(BigDecimal.ZERO);
+        stubOutboundCost(301L, "0");
         org.erp.master.domain.ErpProduct product = new org.erp.master.domain.ErpProduct();
         product.setId(301L);
         product.setName("铝板");
@@ -244,6 +256,52 @@ class ErpSaleServiceImplTest {
         // 成本锚点缺失只提示不阻断：确认照常完成，商品名随 costWarnings 回传
         assertEquals(List.of("铝板"), vo.getCostWarnings());
         assertEquals("CONFIRMED", vo.getStatus());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "insert", "update"})
+    void openingCutoffStopsSaleConfirmationBeforeStockOrderAndFinanceWrites(String entry) {
+        ErpSale persisted = new ErpSale();
+        persisted.setId(1L);
+        persisted.setCustomerId(10L);
+        persisted.setBizDate(CUTOFF_DATE);
+        persisted.setStatus("DRAFT");
+        when(saleMapper.lockById(1L)).thenReturn(persisted);
+        ErpSaleItem row = saleItem(0L, "1", "100.00");
+        row.setNewProductSnapshot(snapshot("临时法兰", "1"));
+        when(itemMapper.selectList(any())).thenReturn(List.of(row));
+
+        var bo = quickBo(quickItem("临时法兰", "1", null));
+        bo.setConfirm(true);
+        // 模拟 DATE 列去除时分秒；确认必须取锁定后的表头，不直接用 BO。
+        bo.setBizDate(new Date(CUTOFF_DATE.getTime() + 1_000));
+        if ("insert".equals(entry)) {
+            doAnswer(inv -> {
+                inv.<ErpSale>getArgument(0).setId(1L);
+                return 1;
+            }).when(saleMapper).insert(any(ErpSale.class));
+        }
+        ServiceException denial = new ServiceException("请先撤回期初", 40902);
+        doThrow(denial).when(openingGuardService).lockAndCheckBusinessDate("AR", 10L, CUTOFF_DATE);
+
+        assertSame(denial, assertThrows(ServiceException.class, () -> {
+            switch (entry) {
+                case "confirm" -> service.confirm(1L);
+                case "insert" -> service.insert(bo);
+                case "update" -> service.update(1L, bo);
+                default -> throw new AssertionError(entry);
+            }
+        }));
+
+        verify(openingGuardService).lockAndCheckBusinessDate("AR", 10L, CUTOFF_DATE);
+        verifyNoInteractions(inventoryService, productService, finArApService);
+        verify(orderProgressService, never()).recalc(any(), any(), any());
+        verify(saleMapper, never()).update(isNull(), any());
+    }
+
+    private void stubOutboundCost(long productId, String cost) {
+        when(inventoryService.outbound(eq("SALE"), any(), any(), eq(productId), any(), any(),
+            any(), any(), any(), anyInt())).thenReturn(new BigDecimal(cost));
     }
 
     private Page<ErpSale> pageOf(ErpSale... rows) {
@@ -344,15 +402,31 @@ class ErpSaleServiceImplTest {
     @Test
     void 确认时按数量分摊运杂费并计入成本() {
         ErpSaleItem a = saleItem(301L, "10", "1000.00");
+        a.setSourceOrderItemId(100L);
         ErpSaleItem b = saleItem(302L, "30", "900.00");
+        b.setSourceOrderItemId(101L);
         when(itemMapper.selectList(any())).thenReturn(List.of(a, b));
-        when(inventoryService.snapshotCost(301L)).thenReturn(new BigDecimal("20.0000"));
-        when(inventoryService.snapshotCost(302L)).thenReturn(new BigDecimal("10.0000"));
+        stubOutboundCost(301L, "20.0000");
+        stubOutboundCost(302L, "10.0000");
         ErpSale head = saleMapper.selectById(1L);
         head.setTotalAmount(new BigDecimal("1900.00"));
         head.setFreightAmount(new BigDecimal("100"));
+        head.setSourceOrderId(20L);
+        head.setBizDate(java.sql.Date.valueOf("2026-01-02"));
 
         var vo = service.confirm(1L);
+        InOrder order = inOrder(saleMapper, orderProgressService, openingGuardService, inventoryService, finArApService);
+        order.verify(saleMapper, times(2)).lockById(1L);
+        order.verify(orderProgressService).lockAndValidate(IErpOrderProgressService.TYPE_SALE, 20L,
+            List.of(new IErpOrderProgressService.ExecLine(100L, a.getQty()),
+                new IErpOrderProgressService.ExecLine(101L, b.getQty())));
+        order.verify(openingGuardService).lockAndCheckBusinessDate("AR", 10L, head.getBizDate());
+        order.verify(inventoryService).lockStockRows(List.of(301L, 302L));
+        order.verify(orderProgressService).recalc(IErpOrderProgressService.TYPE_SALE, 20L, null);
+        order.verify(finArApService).createBySale(1L, head.getNo(), 10L, head.getTotalAmount(), head.getBizDate());
+        verify(inventoryService, never()).snapshotCost(any());
+        verify(inventoryService, times(2)).outbound(eq("SALE"), any(), eq(1L), any(), eq(1L),
+            any(), eq("CUSTOMER"), eq(10L), any(), anyInt());
 
         // 每件运杂费 = 100 / 40 = 2.5000，成本单价 = 库存均价 + 每件运杂费
         assertEquals(0, new BigDecimal("22.5000").compareTo(a.getUnitCost()));
@@ -371,9 +445,9 @@ class ErpSaleServiceImplTest {
         ErpSaleItem b = saleItem(302L, "1", "100.00");
         ErpSaleItem c = saleItem(303L, "1", "100.00");
         when(itemMapper.selectList(any())).thenReturn(List.of(a, b, c));
-        when(inventoryService.snapshotCost(301L)).thenReturn(new BigDecimal("10.0000"));
-        when(inventoryService.snapshotCost(302L)).thenReturn(new BigDecimal("10.0000"));
-        when(inventoryService.snapshotCost(303L)).thenReturn(new BigDecimal("10.0000"));
+        stubOutboundCost(301L, "10.0000");
+        stubOutboundCost(302L, "10.0000");
+        stubOutboundCost(303L, "10.0000");
         ErpSale head = saleMapper.selectById(1L);
         head.setTotalAmount(new BigDecimal("300.00"));
         head.setFreightAmount(new BigDecimal("100"));
@@ -391,7 +465,7 @@ class ErpSaleServiceImplTest {
     void 运杂费为零时成本不含运杂费() {
         ErpSaleItem a = saleItem(301L, "10", "1000.00");
         when(itemMapper.selectList(any())).thenReturn(List.of(a));
-        when(inventoryService.snapshotCost(301L)).thenReturn(new BigDecimal("20.0000"));
+        stubOutboundCost(301L, "20.0000");
         ErpSale head = saleMapper.selectById(1L);
         head.setTotalAmount(new BigDecimal("1000.00"));
         head.setFreightAmount(BigDecimal.ZERO);
@@ -462,6 +536,7 @@ class ErpSaleServiceImplTest {
         assertTrue(row.getNewProductSnapshot().contains("\"qty\":10"));
         verify(productMapper, never()).insert(any(org.erp.master.domain.ErpProduct.class));
         verify(inventoryService, never()).inbound(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
+        verifyNoInteractions(openingGuardService);
     }
 
     @Test
@@ -474,6 +549,7 @@ class ErpSaleServiceImplTest {
         verify(itemMapper, times(2)).insert(captor.capture());
         assertEquals(0L, captor.getAllValues().get(0).getProductId());
         assertTrue(captor.getAllValues().get(1).getNewProductSnapshot().contains("\"qty\":20"));
+        verifyNoInteractions(openingGuardService);
     }
 
     @Test
@@ -486,7 +562,7 @@ class ErpSaleServiceImplTest {
         when(itemMapper.selectList(any())).thenReturn(List.of(row));
         // 建品统一走商品资料服务：编码生成/唯一校验/库存上下限都在服务内，这里只固定返回主键
         when(productService.insert(any(org.erp.master.domain.bo.ErpProductBo.class))).thenReturn(900L);
-        when(inventoryService.snapshotCost(900L)).thenReturn(new BigDecimal("8.0000"));
+        stubOutboundCost(900L, "8.0000");
         ErpSale head = saleMapper.selectById(1L);
         head.setTotalAmount(new BigDecimal("1000.00"));
 
@@ -530,7 +606,7 @@ class ErpSaleServiceImplTest {
         row.setAmount(new BigDecimal("1000.00"));
         row.setNewProductSnapshot(snapshot("临时法兰", "12"));
         when(itemMapper.selectList(any())).thenReturn(List.of(row));
-        when(inventoryService.snapshotCost(900L)).thenReturn(new BigDecimal("8.0000"));
+        stubOutboundCost(900L, "8.0000");
         ErpSale head = saleMapper.selectById(1L);
         head.setTotalAmount(new BigDecimal("1000.00"));
 

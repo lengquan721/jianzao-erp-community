@@ -20,7 +20,9 @@
       content-type="html"
       :options="options"
       :style="styles"
-      @text-change="(e: any) => $emit('update:modelValue', content)"
+      @ready="handleEditorReady"
+      @selection-change="handleSelectionChange"
+      @text-change="handleTextChange"
     />
   </div>
 </template>
@@ -33,8 +35,9 @@ import { propTypes } from '@/utils/propTypes';
 import { globalHeaders } from '@/utils/request';
 import { compressImage, syncUploadFile } from '@/utils/image';
 import type { UploadInstanceFunctions } from 'tdesign-vue-next';
+import { isSafeNoticeUrl, sanitizeNoticeHtml } from './sanitizeHtml';
 
-defineEmits(['update:modelValue']);
+const emit = defineEmits(['update:modelValue']);
 
 const props = defineProps({
   /* 编辑器的内容 */
@@ -77,7 +80,7 @@ const options = ref<any>({
         [{ color: [] }, { background: [] }], // 字体颜色、字体背景颜色
         [{ align: [] }], // 对齐方式
         ['clean'], // 清除文本格式
-        ['link', 'image', 'video'] // 链接、图片、视频
+        ['link', 'image'] // 链接、图片；视频/iframe 不能进入公告白名单
       ],
       handlers: {
         image: (value: boolean) => {
@@ -85,7 +88,7 @@ const options = ref<any>({
             // 触发 t-upload 的文件选择（theme=custom 下由实例 triggerUpload 打开）
             uploadRef.value?.triggerUpload();
           } else {
-            Quill.format('image', true);
+            activeQuill?.format('image', true);
           }
         }
       }
@@ -107,29 +110,75 @@ const styles = computed(() => {
 });
 
 const content = ref('');
+let activeQuill: any;
+let lastSelection: { index: number; length: number } | null = null;
+const handlePaste = (event: ClipboardEvent) => {
+  const dirtyHtml = event.clipboardData?.getData('text/html');
+  if (!dirtyHtml || !activeQuill) return;
+  event.preventDefault();
+  const cleanHtml = sanitizeNoticeHtml(dirtyHtml);
+  const range = activeQuill.getSelection(true) || lastSelection || { index: Math.max(0, activeQuill.getLength() - 1), length: 0 };
+  if (range.length) activeQuill.deleteText(range.index, range.length, 'user');
+  if (cleanHtml) activeQuill.clipboard.dangerouslyPasteHTML(range.index, cleanHtml, 'user');
+};
+
+const handleEditorReady = (quill: any) => {
+  activeQuill = quill;
+  activeQuill.root.addEventListener('paste', handlePaste);
+  const selection = activeQuill.getSelection();
+  if (selection) lastSelection = selection;
+};
+
+const handleSelectionChange = (range: { index: number; length: number } | null) => {
+  if (range) lastSelection = range;
+};
+
+const handleTextChange = () => {
+  const dirtyHtml = activeQuill?.root?.innerHTML ?? content.value;
+  const cleanHtml = sanitizeNoticeHtml(dirtyHtml);
+  if (cleanHtml !== dirtyHtml) {
+    const selection = activeQuill?.getSelection();
+    content.value = cleanHtml;
+    if (activeQuill) {
+      activeQuill.clipboard.dangerouslyPasteHTML(cleanHtml, 'silent');
+      if (selection) activeQuill.setSelection(selection.index, selection.length, 'silent');
+    }
+  }
+  emit('update:modelValue', cleanHtml);
+};
+
 watch(
   () => props.modelValue,
   (v: string) => {
-    if (v !== content.value) {
-      content.value = v || '<p></p>';
-    }
+    const cleanHtml = sanitizeNoticeHtml(v || '');
+    if (cleanHtml !== content.value) content.value = cleanHtml || '<p></p>';
   },
   { immediate: true }
 );
+
+watch(
+  () => props.readOnly,
+  (readOnly) => activeQuill?.enable(!readOnly)
+);
+
+onBeforeUnmount(() => activeQuill?.root?.removeEventListener('paste', handlePaste));
 
 // 图片上传成功返回图片地址（t-upload 的 success 回传上下文对象，后端响应体在 response 上）
 const handleUploadSuccess = (ctx: any) => {
   const res = ctx?.response ?? {};
   // 如果上传成功
   if (res.code === 200) {
-    // 获取富文本实例
+    const imageUrl = res.data?.url;
+    if (typeof imageUrl !== 'string' || !isSafeNoticeUrl(imageUrl, true)) {
+      proxy?.$modal.msgError('图片地址不安全，无法插入');
+      proxy?.$modal.closeLoading();
+      return;
+    }
     const quill = toRaw(quillEditorRef.value).getQuill();
-    // 获取光标位置
-    const length = quill.selection.savedRange.index;
-    // 插入图片，res为服务器返回的图片链接地址
-    quill.insertEmbed(length, 'image', res.data.url);
-    // 调整光标到最后
-    quill.setSelection(length + 1);
+    const range = quill.getSelection() || lastSelection || { index: Math.max(0, quill.getLength() - 1), length: 0 };
+    const index = Math.max(0, Math.min(range.index, quill.getLength() - 1));
+    quill.insertEmbed(index, 'image', imageUrl, 'user');
+    quill.setSelection(index + 1, 0, 'user');
     proxy?.$modal.closeLoading();
   } else {
     proxy?.$modal.msgError('图片插入失败');
@@ -139,7 +188,7 @@ const handleUploadSuccess = (ctx: any) => {
 
 // 图片上传前拦截：格式/大小校验通过后先压缩，压缩结果原地替换给 t-upload 的 XHR
 const handleBeforeUpload = async (file: any) => {
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/svg+xml', 'image/svg'];
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
   //检验文件格式
   if (!allowedTypes.includes(file.type)) {
     proxy?.$modal.msgError(`图片格式错误!`);

@@ -1,7 +1,9 @@
 import request from '@/utils/request';
-import { AxiosPromise } from 'axios';
+import type { AxiosPromise } from 'axios';
 import type {
   ErpId,
+  ErpPageResult,
+  ErpResult,
   ErpPurchaseOrderExecVO,
   ErpPurchaseOrderForm,
   ErpPurchaseOrderItemVO,
@@ -23,12 +25,12 @@ import type {
 
 /* ------------------------------ 采购订单 ------------------------------ */
 
-export function listPurchaseOrder(query: ErpPurchaseOrderQuery): AxiosPromise<ErpPurchaseOrderVO[]> {
-  return request({ url: '/erp/purchase-orders/list', method: 'get', params: query });
+export function listPurchaseOrder(query: ErpPurchaseOrderQuery): Promise<ErpPageResult<ErpPurchaseOrderVO>> {
+  return request<unknown, ErpPageResult<ErpPurchaseOrderVO>>({ url: '/erp/purchase-orders/list', method: 'get', params: query });
 }
 
-export function getPurchaseOrder(id: string | number): AxiosPromise<ErpPurchaseOrderVO> {
-  return request({ url: `/erp/purchase-orders/${id}`, method: 'get' });
+export function getPurchaseOrder(id: ErpId): Promise<ErpResult<ErpPurchaseOrderVO>> {
+  return request<unknown, ErpResult<ErpPurchaseOrderVO>>({ url: `/erp/purchase-orders/${id}`, method: 'get' });
 }
 
 export function addPurchaseOrder(data: ErpPurchaseOrderForm): AxiosPromise<ErpPurchaseOrderVO> {
@@ -77,9 +79,9 @@ export function createPurchaseReceipt(id: string | number, data?: ErpPurchaseOrd
   return request({ url: `/erp/purchase-orders/${id}/receipts`, method: 'post', data });
 }
 
-/** 订单执行记录：入库与退货按时间倒序，供详情页签 2 */
-export function listPurchaseOrderExecutions(id: string | number): AxiosPromise<ErpPurchaseOrderExecVO[]> {
-  return request({ url: `/erp/purchase-orders/${id}/executions`, method: 'get' });
+/** 订单执行记录：入库与退货按时间倒序，金额已带符号。 */
+export function listPurchaseOrderExecutions(id: ErpId): Promise<ErpResult<ErpPurchaseOrderExecVO[]>> {
+  return request<unknown, ErpResult<ErpPurchaseOrderExecVO[]>>({ url: `/erp/purchase-orders/${id}/executions`, method: 'get' });
 }
 
 /** 未交行选择器：orderId 必填，只返回该单 CONFIRMED 且 remain>0 的行（不接受 supplierId） */
@@ -89,12 +91,12 @@ export function listPurchaseOpenItems(orderId: string | number): AxiosPromise<Er
 
 /* ------------------------------ 销售订单 ------------------------------ */
 
-export function listSaleOrder(query: ErpSaleOrderQuery): AxiosPromise<ErpSaleOrderVO[]> {
-  return request({ url: '/erp/sale-orders/list', method: 'get', params: query });
+export function listSaleOrder(query: ErpSaleOrderQuery): Promise<ErpPageResult<ErpSaleOrderVO>> {
+  return request<unknown, ErpPageResult<ErpSaleOrderVO>>({ url: '/erp/sale-orders/list', method: 'get', params: query });
 }
 
-export function getSaleOrder(id: string | number): AxiosPromise<ErpSaleOrderVO> {
-  return request({ url: `/erp/sale-orders/${id}`, method: 'get' });
+export function getSaleOrder(id: ErpId): Promise<ErpResult<ErpSaleOrderVO>> {
+  return request<unknown, ErpResult<ErpSaleOrderVO>>({ url: `/erp/sale-orders/${id}`, method: 'get' });
 }
 
 export function addSaleOrder(data: ErpSaleOrderForm): AxiosPromise<ErpSaleOrderVO> {
@@ -143,9 +145,9 @@ export function createSaleDelivery(id: string | number, data?: ErpSaleOrderDeliv
   return request({ url: `/erp/sale-orders/${id}/deliveries`, method: 'post', data });
 }
 
-/** 订单执行记录：出库与退货按时间倒序，供详情页签 2 */
-export function listSaleOrderExecutions(id: string | number): AxiosPromise<ErpSaleOrderExecVO[]> {
-  return request({ url: `/erp/sale-orders/${id}/executions`, method: 'get' });
+/** 订单执行记录：出库与退货按时间倒序，金额已带符号。 */
+export function listSaleOrderExecutions(id: ErpId): Promise<ErpResult<ErpSaleOrderExecVO[]>> {
+  return request<unknown, ErpResult<ErpSaleOrderExecVO[]>>({ url: `/erp/sale-orders/${id}/executions`, method: 'get' });
 }
 
 /** 未交行选择器：orderId 必填，只返回该单 CONFIRMED 且 remain>0 的行 */

@@ -117,22 +117,46 @@
                   <template #icon><FileCopyIcon /></template>
                   复制流程
                 </t-button>
-                <t-button v-if="row.isPublish === 0 && checkPermi(['workflow:definition:query'])" theme="primary" variant="text" size="small" @click="design(row)">
+                <t-button
+                  v-if="row.isPublish === 0 && checkPermi(['workflow:definition:query'])"
+                  theme="primary"
+                  variant="text"
+                  size="small"
+                  @click="design(row)"
+                >
                   <template #icon><ViewListIcon /></template>
                   流程设计
                 </t-button>
-                <t-button v-if="row.isPublish !== 0 && checkPermi(['workflow:definition:query'])" theme="primary" variant="text" size="small" @click="designView(row)">
+                <t-button
+                  v-if="row.isPublish !== 0 && checkPermi(['workflow:definition:query'])"
+                  theme="primary"
+                  variant="text"
+                  size="small"
+                  @click="designView(row)"
+                >
                   <template #icon><BrowseIcon /></template>
                   查看流程
                 </t-button>
-                <t-button v-if="row.isPublish !== 1 && checkPermi(['workflow:definition:publish'])" theme="primary" variant="text" size="small" @click="handlePublish(row)">
+                <t-button
+                  v-if="row.isPublish !== 1 && checkPermi(['workflow:definition:publish'])"
+                  theme="primary"
+                  variant="text"
+                  size="small"
+                  @click="handlePublish(row)"
+                >
                   <template #icon><CheckCircleIcon /></template>
                   发布流程
                 </t-button>
               </div>
             </template>
           </t-table>
-          <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="getPageList" />
+          <pagination
+            v-show="total > 0"
+            v-model:page="queryParams.pageNum"
+            v-model:limit="queryParams.pageSize"
+            :total="total"
+            @pagination="getPageList"
+          />
         </t-card>
       </t-col>
     </t-row>
@@ -171,7 +195,15 @@
     </t-dialog>
 
     <!-- 新增/编辑流程定义：原 EP 把表单误放在 #footer，内容区为空；TDesign #footer 会渲染默认按钮，故表单移入默认插槽 -->
-    <t-dialog v-model:visible="modelDialog.visible" :header="modelDialog.title" width="650px" attach="body" :close-on-overlay-click="false" :footer="false" destroy-on-close>
+    <t-dialog
+      v-model:visible="modelDialog.visible"
+      :header="modelDialog.title"
+      width="650px"
+      attach="body"
+      :close-on-overlay-click="false"
+      :footer="false"
+      destroy-on-close
+    >
       <t-form ref="defFormRef" :data="form" :rules="rules" label-width="120px">
         <t-form-item label="流程类别" name="category">
           <t-tree-select
@@ -223,7 +255,20 @@ import { CategoryTreeVO } from '@/api/workflow/category/types';
 import { FlowDefinitionQuery, FlowDefinitionVo, FlowDefinitionForm } from '@/api/workflow/definition/types';
 import { checkPermi } from '@/utils/permission';
 // TDesign 图标必须显式 import，不会自动解析（DOC/35 §3）
-import { BrowseIcon, CheckCircleIcon, CloudUploadIcon, DeleteIcon, DownloadIcon, Edit1Icon, FileCopyIcon, PlusIcon, RefreshIcon, SearchIcon, UploadIcon, ViewListIcon } from 'tdesign-icons-vue-next';
+import {
+  BrowseIcon,
+  CheckCircleIcon,
+  CloudUploadIcon,
+  DeleteIcon,
+  DownloadIcon,
+  Edit1Icon,
+  FileCopyIcon,
+  PlusIcon,
+  RefreshIcon,
+  SearchIcon,
+  UploadIcon,
+  ViewListIcon
+} from 'tdesign-icons-vue-next';
 import type { TreeNodeModel } from 'tdesign-vue-next';
 
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
@@ -372,7 +417,7 @@ const handleSelectionChange = (keys: Array<string | number>) => {
 const getPageList = async () => {
   const query = proxy.$route.query;
   if (query.activeName) {
-    activeName.value = query.activeName;
+    activeName.value = Array.isArray(query.activeName) ? query.activeName[0] || '0' : query.activeName;
     proxy.$route.query.activeName = '';
   }
   if (activeName.value === '0') {
@@ -482,7 +527,7 @@ const design = async (row: FlowDefinitionVo) => {
     path: `/workflow/design/index`,
     query: {
       definitionId: row.id,
-      disabled: false,
+      disabled: 'false',
       activeName: activeName.value
     }
   });
@@ -497,7 +542,7 @@ const designView = async (row: FlowDefinitionVo) => {
     path: `/workflow/design/index`,
     query: {
       definitionId: row.id,
-      disabled: true,
+      disabled: 'true',
       activeName: activeName.value
     }
   });
@@ -513,7 +558,7 @@ const reset = () => {
 const handleAdd = async () => {
   reset();
   if (queryParams.value.category != '') {
-    form.value.category = queryParams.value.category;
+    form.value.category = String(queryParams.value.category);
   }
   form.value.modelValue = 'CLASSICS';
   form.value.formCustom = 'N';
@@ -543,8 +588,7 @@ const handleSubmit = async () => {
   const valid = result === true || result === undefined;
   if (!valid) return;
   loading.value = true;
-  const ext = {};
-  ext.autoPass = autoPass.value;
+  const ext = { autoPass: autoPass.value };
   form.value.ext = JSON.stringify(ext);
   if (form.value.id) {
     await edit(form.value).finally(() => (loading.value = false));

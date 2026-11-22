@@ -32,9 +32,7 @@ public class FinReceiptVo {
      */
     private Long accountId;
 
-    /**
-     * 红字标志：1=退款单（前端据此显示退款徽标与负值金额）
-     */
+    /** 红字标志：1=销售退货联动退款，普通收款操作不可修改。 */
     private Integer negative;
 
     private String remark;

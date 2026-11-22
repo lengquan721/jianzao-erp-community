@@ -8,9 +8,11 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
 import org.erp.stock.domain.bo.StOpeningBo;
+import org.erp.stock.domain.bo.StockPage;
 import org.erp.stock.domain.vo.StOpeningVo;
 import org.erp.stock.excel.StOpeningExcelService;
 import org.erp.stock.service.IStOpeningService;
@@ -20,7 +22,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
-import java.util.List;
 
 /**
  * 期初库存
@@ -36,8 +37,10 @@ public class StOpeningController extends BaseController {
 
     @SaCheckPermission("erp:stock:opening")
     @GetMapping("/list")
-    public R<List<StOpeningVo>> list(@RequestParam(required = false) Long warehouseId) {
-        return R.ok(openingService.listAll(warehouseId));
+    public TableDataInfo<StOpeningVo> list(@RequestParam(required = false) Long warehouseId,
+                                           @RequestParam int pageNum,
+                                           @RequestParam(defaultValue = StockPage.DEFAULT_SIZE) int pageSize) {
+        return openingService.pageDetails(warehouseId, pageNum, pageSize);
     }
 
     @SaCheckPermission("erp:stock:opening")
@@ -82,7 +85,7 @@ public class StOpeningController extends BaseController {
     }
 
     /**
-     * 导出期初库存（全部，不分页）
+     * 导出过滤后的期初库存，与 UI 页码无关，超过 5000 条拒绝。
      */
     @SaCheckPermission("erp:stock:opening:export")
     @Log(title = "期初库存导出", businessType = BusinessType.EXPORT)

@@ -38,9 +38,7 @@ public class FinReceipt extends TenantEntity {
      */
     private Long accountId;
 
-    /**
-     * 红字标志（DOC/24 §2.4）：1=退款单，确认时对 alloc 台账做反核销（unsettle）而非核销
-     */
+    /** 仅销售退货联动生成：资金方向为流出，确认时对原 SALE 应收执行受控反核销。 */
     private Integer negative;
 
     private String remark;

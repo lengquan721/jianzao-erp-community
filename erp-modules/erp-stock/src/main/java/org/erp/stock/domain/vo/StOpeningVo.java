@@ -21,6 +21,10 @@ public class StOpeningVo {
 
     private Long warehouseId;
 
+    private String warehouseCode;
+
+    private String warehouseName;
+
     private BigDecimal qty;
 
     /**

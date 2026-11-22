@@ -48,7 +48,6 @@ public class FinOtherFlowController extends BaseController {
     @RepeatSubmit
     @PostMapping
     public R<FinOtherFlowVo> add(@Valid @RequestBody FinOtherFlowBo bo) {
-        // confirm=true 会在同一事务内直接记账并写成本台账，必须同时具备确认权限
         ConfirmPermission.check("erp:finance:other-flow:confirm", bo.getConfirm());
         return R.ok(flowService.insert(bo));
     }

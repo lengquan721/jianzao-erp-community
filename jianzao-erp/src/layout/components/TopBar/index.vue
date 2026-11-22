@@ -9,16 +9,17 @@
   </t-head-menu>
 </template>
 
-<script setup>
-import SidebarItem from '../Sidebar/SidebarItem'
-import {useAppStore} from '@/store/modules/app'
-import {useSettingsStore} from '@/store/modules/settings'
-import {usePermissionStore} from '@/store/modules/permission'
+<script setup lang="ts">
+import SidebarItem from '../Sidebar/SidebarItem.vue';
+import type { RouteRecordRaw } from 'vue-router';
+import { useAppStore } from '@/store/modules/app';
+import { useSettingsStore } from '@/store/modules/settings';
+import { usePermissionStore } from '@/store/modules/permission';
 
-const route = useRoute()
-const appStore = useAppStore()
-const settingsStore = useSettingsStore()
-const permissionStore = usePermissionStore()
+const route = useRoute();
+const appStore = useAppStore();
+const settingsStore = useSettingsStore();
+const permissionStore = usePermissionStore();
 
 // 深色模式自动响应
 const checkDark = () => document.documentElement.classList.contains('dark') || document.documentElement.getAttribute('theme-mode') === 'dark';
@@ -27,30 +28,30 @@ const darkObserver = new MutationObserver(() => {
   isDark.value = checkDark();
 });
 
-const sidebarRouters = computed(() => permissionStore.sidebarRouters)
-const theme = computed(() => settingsStore.theme)
-const device = computed(() => appStore.device)
+const sidebarRouters = computed<RouteRecordRaw[]>(() => permissionStore.getSidebarRoutes());
+const theme = computed(() => settingsStore.theme);
+const device = computed(() => appStore.device);
 const activeMenu = computed(() => {
-  const { meta, path } = route
+  const { meta, path } = route;
   if (meta.activeMenu) {
-    return meta.activeMenu
+    return meta.activeMenu;
   }
-  return path
-})
+  return path;
+});
 
-const visibleNumber = ref(5)
+const visibleNumber = ref(5);
 const topMenus = computed(() => {
-  return permissionStore.sidebarRouters.filter((f) => !f.hidden).slice(0, visibleNumber.value)
-})
+  return sidebarRouters.value.filter((f) => !f.hidden).slice(0, visibleNumber.value);
+});
 const moreRoutes = computed(() => {
-  return permissionStore.sidebarRouters.filter((f) => !f.hidden).slice(visibleNumber.value, sidebarRouters.value.length - visibleNumber.value)
-})
+  return sidebarRouters.value.filter((f) => !f.hidden).slice(visibleNumber.value, sidebarRouters.value.length - visibleNumber.value);
+});
 function setVisibleNumber() {
-  let width = document.body.getBoundingClientRect().width
+  let width = document.body.getBoundingClientRect().width;
   if (width >= 1000) {
-    width -= 500
+    width -= 500;
   }
-  visibleNumber.value = parseInt(width / 3 / 85)
+  visibleNumber.value = Math.trunc(width / 3 / 85);
 }
 
 onMounted(() => {

@@ -1,5 +1,7 @@
 package org.erp.trade.domain;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -52,6 +54,10 @@ public class ErpSaleReturn extends TenantEntity {
     private Integer needRefund;
 
     private BigDecimal refundAmount;
+
+    /** 草稿持久化；取消退款时同步清空。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Long refundAccountId;
 
     /**
      * 联动红字收款单ID，确认时回填，撤回时清空

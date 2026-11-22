@@ -21,7 +21,7 @@ public interface FinSourceNoMapper {
      */
     @Select({
         "<script>",
-        "select id as sourceId, no from biz_sale",
+        "select id as sourceId, customer_id as partyId, no from biz_sale",
         "where del_flag = '0' and id in",
         "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
         "</script>"
@@ -33,7 +33,7 @@ public interface FinSourceNoMapper {
      */
     @Select({
         "<script>",
-        "select id as sourceId, no from biz_purchase",
+        "select id as sourceId, supplier_id as partyId, no from biz_purchase",
         "where del_flag = '0' and id in",
         "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
         "</script>"
@@ -45,7 +45,7 @@ public interface FinSourceNoMapper {
      */
     @Select({
         "<script>",
-        "select id as sourceId, no from biz_sale_return",
+        "select id as sourceId, customer_id as partyId, no from biz_sale_return",
         "where del_flag = '0' and id in",
         "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
         "</script>"
@@ -57,7 +57,7 @@ public interface FinSourceNoMapper {
      */
     @Select({
         "<script>",
-        "select id as sourceId, no from biz_purchase_return",
+        "select id as sourceId, supplier_id as partyId, no from biz_purchase_return",
         "where del_flag = '0' and id in",
         "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
         "</script>"

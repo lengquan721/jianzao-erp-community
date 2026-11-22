@@ -9,9 +9,8 @@ import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
+import org.dromara.common.core.utils.RequestBodyLimits;
 import org.dromara.common.core.utils.StringUtils;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -128,7 +127,6 @@ public class XssHttpServletRequestWrapper extends HttpServletRequestWrapper {
      * 是否是Json请求
      */
     public boolean isJsonRequest() {
-        String header = super.getHeader(HttpHeaders.CONTENT_TYPE);
-        return StringUtils.startsWithIgnoreCase(header, MediaType.APPLICATION_JSON_VALUE);
+        return RequestBodyLimits.isJsonContentType(super.getContentType());
     }
 }

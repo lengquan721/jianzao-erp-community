@@ -11,8 +11,12 @@
               <t-input v-model="queryParams.phonenumber" placeholder="请输入手机号码" clearable class="query-w-md" @enter="handleQuery" />
             </t-form-item>
             <div class="erp-filter-actions">
-              <t-button theme="primary" @click="handleQuery"><template #icon><SearchIcon /></template>搜索</t-button>
-              <t-button theme="default" variant="outline" @click="resetQuery"><template #icon><RefreshIcon /></template>重置</t-button>
+              <t-button theme="primary" @click="handleQuery"
+                ><template #icon><SearchIcon /></template>搜索</t-button
+              >
+              <t-button theme="default" variant="outline" @click="resetQuery"
+                ><template #icon><RefreshIcon /></template>重置</t-button
+              >
             </div>
           </t-form>
         </t-card>
@@ -28,7 +32,9 @@
           <t-button v-hasPermi="['system:role:remove']" theme="danger" variant="outline" :disabled="multiple" @click="cancelAuthUserAll">
             <template #icon><CloseCircleIcon /></template>批量取消授权
           </t-button>
-          <t-button theme="warning" variant="outline" @click="handleClose"><template #icon><CloseIcon /></template>关闭</t-button>
+          <t-button theme="warning" variant="outline" @click="handleClose"
+            ><template #icon><CloseIcon /></template>关闭</t-button
+          >
         </div>
         <right-toolbar v-model:show-search="showSearch" :search="true" @query-table="getList"></right-toolbar>
       </div>
@@ -71,7 +77,7 @@ import { allocatedUserList, authUserCancel, authUserCancelAll } from '@/api/syst
 import { UserQuery } from '@/api/system/user/types';
 import { UserVO } from '@/api/system/user/types';
 import SelectUser from './selectUser.vue';
-import { RouteLocationNormalized } from 'vue-router';
+import { RouteLocationRaw } from 'vue-router';
 import { checkPermi } from '@/utils/permission';
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { CloseCircleIcon, CloseIcon, PlusIcon, RefreshIcon, SearchIcon } from 'tdesign-icons-vue-next';
@@ -123,17 +129,7 @@ const getList = async () => {
 };
 // 返回按钮
 const handleClose = () => {
-  const obj: RouteLocationNormalized = {
-    path: '/system/role',
-    fullPath: '',
-    hash: '',
-    matched: [],
-    meta: undefined,
-    name: undefined,
-    params: undefined,
-    query: undefined,
-    redirectedFrom: undefined
-  };
+  const obj: RouteLocationRaw = { path: '/system/role' };
   proxy?.$tab.closeOpenPage(obj);
 };
 /** 搜索按钮操作 */

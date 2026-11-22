@@ -11,25 +11,25 @@
       <t-col :xs="6" :sm="6" :md="3">
         <div class="erp-surface stat-card">
           <div class="stat-title">{{ partyType === 'AR' ? '总应收' : '总应付' }}</div>
-          <div class="stat-value stat-total">{{ formatMoney(summary.totalAmount) }}</div>
+          <div class="stat-value stat-total">{{ statMoney(summary.totalAmount) }}</div>
         </div>
       </t-col>
       <t-col :xs="6" :sm="6" :md="3">
         <div class="erp-surface stat-card">
           <div class="stat-title">已核销</div>
-          <div class="stat-value stat-settled">{{ formatMoney(summary.settledAmount) }}</div>
+          <div class="stat-value stat-settled">{{ statMoney(summary.settledAmount) }}</div>
         </div>
       </t-col>
       <t-col :xs="6" :sm="6" :md="3">
         <div class="erp-surface stat-card">
           <div class="stat-title">未核销</div>
-          <div class="stat-value stat-unsettled">{{ formatMoney(summary.unsettledAmount) }}</div>
+          <div class="stat-value stat-unsettled">{{ statMoney(summary.unsettledAmount) }}</div>
         </div>
       </t-col>
       <t-col :xs="6" :sm="6" :md="3">
         <div class="erp-surface stat-card">
           <div class="stat-title">期初余额</div>
-          <div class="stat-value">{{ formatMoney(summary.openingAmount) }}</div>
+          <div class="stat-value">{{ statMoney(summary.openingAmount) }}</div>
         </div>
       </t-col>
     </t-row>
@@ -55,7 +55,7 @@
         size="small"
         bordered
         cell-empty-content="-"
-        :empty="'暂无往来数据'"
+        :empty="summaryFailed ? '汇总加载失败，请重试' : '暂无往来数据'"
         @row-click="(ctx: any) => handleRowClick(ctx.row)"
         @column-resize-change="(ctx: any) => saveColumnWidths('finance/party-summary', ctx.columnsWidth)"
       >
@@ -65,6 +65,13 @@
         <template #unsettled="{ row }">{{ formatMoney(row.unsettled) }}</template>
         <template #opening="{ row }">{{ formatMoney(row.opening) }}</template>
       </t-table>
+      <pagination
+        v-show="partyTotal > 0"
+        v-model:page="summaryQuery.pageNum"
+        v-model:limit="summaryQuery.pageSize"
+        :total="partyTotal"
+        @pagination="handleSummaryPage"
+      />
     </div>
 
     <!-- 台账明细 -->
@@ -88,7 +95,7 @@
         size="small"
         bordered
         cell-empty-content="-"
-        :empty="'暂无台账明细'"
+        :empty="detailFailed ? '明细加载失败，请重试' : '暂无台账明细'"
         @column-resize-change="(ctx: any) => saveColumnWidths('finance/ledger-detail', ctx.columnsWidth)"
       >
         <template #bizDate="{ row }">{{ toDate(row.bizDate) }}</template>
@@ -101,21 +108,27 @@
           <StatusTag kind="arAp" :value="row.status" :status-text="row.statusText" />
         </template>
       </t-table>
+      <pagination
+        v-show="detailTotal > 0"
+        v-model:page="detailQuery.pageNum"
+        v-model:limit="detailQuery.pageSize"
+        :total="detailTotal"
+        @pagination="getDetail"
+      />
     </div>
   </div>
 </template>
 
 <script setup name="ErpFinance" lang="ts">
-import { arApDetail, arApSummary } from '@/api/erp/finance';
+import { arApDetailPage, arApSummaryPage } from '@/api/erp/finance';
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { ERP_AR_AP_SOURCE_TYPE } from '@/api/erp/enums';
-import type { ErpArApSourceType, ErpId, ErpPartyType, FinArApPartySummary, FinArApVO } from '@/api/erp/types';
+import type { ErpArApSourceType, ErpPartyType, FinArApPartySummary, FinArApVO } from '@/api/erp/types';
 import { formatMoney } from '@/utils/erp/calc';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import StatusTag from '@/components/erp/StatusTag.vue';
 import { ArrowLeftIcon } from 'tdesign-icons-vue-next';
-
-const { proxy } = getCurrentInstance() as ComponentInternalInstance;
 
 /** 往来类型：AR 应收 / AP 应付 */
 const partyType = ref<ErpPartyType>('AR');
@@ -174,61 +187,103 @@ const sourceNo = (row: FinArApVO): string => {
   return '-';
 };
 
-/** 加载汇总 */
+const summaryQuery = reactive({ pageNum: 1, pageSize: 20 });
+const detailQuery = reactive({ pageNum: 1, pageSize: 20 });
+const partyTotal = ref(0);
+const detailTotal = ref(0);
+const summaryFailed = ref(false);
+const detailFailed = ref(false);
+let summaryRequest = 0;
+let detailRequest = 0;
+
+// 失败/加载中不能把旧页或零值当作真实全量统计展示。
+const statMoney = (value: number) => (summaryFailed.value || loading.value ? '-' : formatMoney(value));
+
+/** 加载全量金额合计 + 当前页的往来单位分组，不对 parties 做本地分页/重新求和。 */
 const getSummary = async () => {
+  const requestId = ++summaryRequest;
   loading.value = true;
+  summaryFailed.value = false;
+  parties.value = [];
   try {
-    const res = await arApSummary(partyType.value);
+    const res = await arApSummaryPage({ partyType: partyType.value, ...summaryQuery });
+    if (requestId !== summaryRequest) return;
     const data = res.data;
-    summary.totalAmount = Number(data?.totalAmount ?? 0);
-    summary.settledAmount = Number(data?.settledAmount ?? 0);
-    summary.unsettledAmount = Number(data?.unsettledAmount ?? 0);
-    summary.openingAmount = Number(data?.openingAmount ?? 0);
-    parties.value = data?.parties ?? [];
+    summary.totalAmount = Number(data.totalAmount);
+    summary.settledAmount = Number(data.settledAmount);
+    summary.unsettledAmount = Number(data.unsettledAmount);
+    summary.openingAmount = Number(data.openingAmount);
+    parties.value = data.parties;
+    partyTotal.value = Number(data.total);
   } catch {
-    summary.totalAmount = 0;
-    summary.settledAmount = 0;
-    summary.unsettledAmount = 0;
-    summary.openingAmount = 0;
+    if (requestId !== summaryRequest) return;
+    summaryFailed.value = true;
     parties.value = [];
+    partyTotal.value = 0;
   } finally {
-    loading.value = false;
+    if (requestId === summaryRequest) loading.value = false;
   }
 };
 
-/** 加载指定往来单位的台账明细 */
-const getDetail = async (partyId: ErpId) => {
+/** 指定往来单位的数据库明细页；日期/来源/状态不在前端二次过滤。 */
+const getDetail = async () => {
+  if (!currentParty.value) return;
+  const requestId = ++detailRequest;
   detailLoading.value = true;
+  detailFailed.value = false;
+  detailList.value = [];
   try {
-    const res = await arApDetail(partyType.value, partyId);
-    detailList.value = res.data ?? [];
+    const res = await arApDetailPage({ partyType: partyType.value, partyId: currentParty.value.partyId, ...detailQuery });
+    if (requestId !== detailRequest) return;
+    detailList.value = res.rows;
+    detailTotal.value = Number(res.total);
   } catch {
+    if (requestId !== detailRequest) return;
+    detailFailed.value = true;
     detailList.value = [];
+    detailTotal.value = 0;
   } finally {
-    detailLoading.value = false;
+    if (requestId === detailRequest) detailLoading.value = false;
   }
 };
 
-/** 点击行切换台账明细 */
+/** 点击另一单位必须从第一页开始，之前单位的延迟响应不能覆盖新明细。 */
 const handleRowClick = async (row: FinArApPartySummary) => {
   currentParty.value = row;
-  await getDetail(row.partyId);
+  detailQuery.pageNum = 1;
+  detailTotal.value = 0;
+  await getDetail();
 };
 
-/** 返回汇总视图 */
+/** 返回汇总视图并使在途明细失效。 */
 const backToSummary = () => {
+  ++detailRequest;
   currentParty.value = undefined;
   detailList.value = [];
+  detailTotal.value = 0;
+  detailQuery.pageNum = 1;
+  detailLoading.value = false;
+  detailFailed.value = false;
 };
 
-/** 切换应收/应付 */
+const handleSummaryPage = () => {
+  backToSummary();
+  getSummary();
+};
+
+/** 切换应收/应付：两个分页游标均复位，旧类型请求不能覆盖当前类型。 */
 const handlePartyTypeChange = async () => {
+  summaryQuery.pageNum = 1;
   backToSummary();
   await getSummary();
 };
 
 onMounted(() => {
   getSummary();
+});
+onBeforeUnmount(() => {
+  ++summaryRequest;
+  ++detailRequest;
 });
 </script>
 

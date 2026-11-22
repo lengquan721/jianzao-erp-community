@@ -74,6 +74,10 @@ public class WarehouseExcelService {
         List<ExcelRow<WarehouseImportRow>> rows;
         try (InputStream inputStream = file.getInputStream()) {
             rows = ExcelRowReader.read(inputStream, WarehouseImportRow.class);
+        } catch (ExcelRowReader.ImportLimitException e) {
+            ImportResult rejected = new ImportResult();
+            rejected.fail(e.rowNumber(), e.getMessage());
+            throw new ImportRollbackException(rejected);
         }
         ImportResult result = importRows(rows, updateSupport);
         if (result.getFailed() > 0) {
@@ -196,9 +200,8 @@ public class WarehouseExcelService {
      * 导出映射：状态转为中文，不输出 id/tenantId/delFlag。
      */
     List<WarehouseExportVo> exportRows(String keyword, Integer status) {
-        List<ErpWarehouseVo> rows = warehouseService
-            .selectPage(keyword, status, new PageQuery(EXPORT_LIMIT, 1))
-            .getRows();
+        List<ErpWarehouseVo> rows = PageQuery.collectForExport(EXPORT_LIMIT, query ->
+            warehouseService.selectPage(keyword, status, query).getRows());
         List<WarehouseExportVo> result = new ArrayList<>();
         if (rows == null) {
             return result;

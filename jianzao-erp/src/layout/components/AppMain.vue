@@ -2,7 +2,7 @@
   <section class="app-main">
     <router-view v-slot="{ Component, route }">
       <transition :enter-active-class="animate" mode="out-in">
-        <keep-alive :include="tagsViewStore.cachedViews">
+        <keep-alive :include="tagsViewStore.cachedViews" :max="12">
           <component :is="Component" v-if="!route.meta.link" :key="route.path" />
         </keep-alive>
       </transition>

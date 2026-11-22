@@ -15,6 +15,9 @@ public class FinSourceNo {
      */
     private Long sourceId;
 
+    /** 源业务单的本租户客户/供应商；防止损坏的台账引用泄露其它往来单号。 */
+    private Long partyId;
+
     /**
      * 来源单号
      */

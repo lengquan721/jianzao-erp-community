@@ -8,11 +8,38 @@ import org.erp.stock.domain.StOpening;
 import org.erp.stock.domain.vo.StOpeningVo;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 期初库存 Mapper
  */
 public interface StOpeningMapper extends BaseMapperPlus<StOpening, StOpeningVo> {
+
+    String OPENING_FILTER = """
+        where o.del_flag = '0'
+        <if test="warehouseId != null">and o.warehouse_id = #{warehouseId}</if>
+        """;
+
+    @Select("<script>select count(*) from st_opening o " + OPENING_FILTER + "</script>")
+    long countDetails(@Param("warehouseId") Long warehouseId);
+
+    // LEFT JOIN 不会丢失历史行；名称只取当前租户未删除的主数据。
+    @Select("""
+        <script>
+        select o.id, o.product_id as productId, o.warehouse_id as warehouseId, o.qty,
+               o.unit_cost as unitCost, o.status, o.create_time as createTime,
+               p.code as productCode, p.name as productName, p.qty_scale as qtyScale,
+               w.code as warehouseCode, w.name as warehouseName
+        from st_opening o
+        left join md_product p on p.id = o.product_id and p.tenant_id = o.tenant_id and p.del_flag = '0'
+        left join md_warehouse w on w.id = o.warehouse_id and w.tenant_id = o.tenant_id and w.del_flag = '0'
+        """ + OPENING_FILTER + """
+        order by o.product_id, o.warehouse_id, o.id
+        limit #{size} offset #{offset}
+        </script>
+        """)
+    List<StOpeningVo> selectDetails(@Param("warehouseId") Long warehouseId, @Param("offset") long offset,
+                                   @Param("size") int size);
 
     /**
      * 按 product_id + warehouse_id 查询已逻辑删除的期初行 ID。

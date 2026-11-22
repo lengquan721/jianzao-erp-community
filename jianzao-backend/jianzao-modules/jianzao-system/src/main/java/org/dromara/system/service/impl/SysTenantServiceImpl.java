@@ -284,11 +284,15 @@ public class SysTenantServiceImpl implements ISysTenantService {
         SysTenant tenant = MapstructUtils.convert(bo, SysTenant.class);
         tenant.setTenantId(null);
         tenant.setPackageId(null);
-        // 编辑表单始终提交过期时间，null 即清空；updateById 会跳过 null 字段，必须显式 set 才能落库置空
+        return baseMapper.update(tenant, tenantUpdateScope(bo)) > 0;
+    }
+
+    static LambdaUpdateWrapper<SysTenant> tenantUpdateScope(SysTenantBo bo) {
         LambdaUpdateWrapper<SysTenant> luw = new LambdaUpdateWrapper<>();
         luw.eq(SysTenant::getId, bo.getId());
-        luw.set(ObjectUtil.isNull(bo.getExpireTime()), SysTenant::getExpireTime, null);
-        return baseMapper.update(tenant, luw) > 0;
+        // 缺少字段保持原值；仅明确提交 null 时清空，非空值仍由实体更新。
+        luw.set(bo.isExpireTimeSpecified() && bo.getExpireTime() == null, SysTenant::getExpireTime, null);
+        return luw;
     }
 
     /**

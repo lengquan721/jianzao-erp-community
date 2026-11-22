@@ -1,11 +1,20 @@
 import request from '@/utils/request';
 import { AxiosPromise } from 'axios';
 import type {
+  ErpAmount,
+  ErpId,
+  ErpPartyType,
+  ErpPageResult,
+  ErpResult,
+  FinArApDetailPageQuery,
   FinArApQuery,
+  FinArApSummaryPageQuery,
+  FinArApSummaryPageVO,
   FinArApSummaryVO,
   FinArApVO,
   FinCostReportVO,
   FinOpeningForm,
+  FinOpeningPageQuery,
   FinOpeningVO,
   FinOtherFlowForm,
   FinOtherFlowQuery,
@@ -27,14 +36,25 @@ export function listArAp(query: FinArApQuery): AxiosPromise<FinArApVO[]> {
   return request({ url: '/erp/finance/ar-ap/list', method: 'get', params: query });
 }
 
-/** 汇总：总额 + 按客户/供应商分组 */
+/** 兼容旧汇总：至多 5000 个完整分组，超限明确报错，不截断。 */
 export function arApSummary(partyType: string): AxiosPromise<FinArApSummaryVO> {
   return request({ url: '/erp/finance/ar-ap/summary', method: 'get', params: { partyType } });
 }
 
-/** 单客户/供应商台账明细 */
-export function arApDetail(partyType: string, partyId: string | number): AxiosPromise<FinArApVO[]> {
-  return request({ url: '/erp/finance/ar-ap/detail', method: 'get', params: { partyType, partyId } });
+/** 全量金额合计 + 按往来单位在数据库分页的分组（每页 1..200）。 */
+export function arApSummaryPage(query: FinArApSummaryPageQuery): Promise<ErpResult<FinArApSummaryPageVO>> {
+  return request<unknown, ErpResult<FinArApSummaryPageVO>>({ url: '/erp/finance/ar-ap/summary/page', method: 'get', params: query });
+}
+
+/** 完整非 VOID 旧明细；收/付款表单显式选择仅查正余额候选，两种口径超限均明确拒绝。 */
+export function arApDetail(partyType: string, partyId: string | number, allocatableOnly = false): AxiosPromise<FinArApVO[]> {
+  const params = allocatableOnly ? { partyType, partyId, allocatableOnly: true } : { partyType, partyId };
+  return request({ url: '/erp/finance/ar-ap/detail', method: 'get', params });
+}
+
+/** 单客户/供应商明细数据库分页；响应 rows / total 位于顶层。 */
+export function arApDetailPage(query: FinArApDetailPageQuery): Promise<ErpPageResult<FinArApVO>> {
+  return request<unknown, ErpPageResult<FinArApVO>>({ url: '/erp/finance/ar-ap/detail/page', method: 'get', params: query });
 }
 
 /* ------------------------------ 往来期初 ------------------------------ */
@@ -43,7 +63,28 @@ export function listFinOpening(partyType?: string): AxiosPromise<FinOpeningVO[]>
   return request({ url: '/erp/finance/openings/list', method: 'get', params: { partyType } });
 }
 
-/** 期初往来导出（按往来类型筛选，后端不分页） */
+/** 期初往来分页，响应 rows / total 位于顶层；旧 listFinOpening 仍返回完整有界列表。 */
+export function listFinOpeningPage(query: FinOpeningPageQuery): Promise<ErpPageResult<FinOpeningVO>> {
+  return request<unknown, ErpPageResult<FinOpeningVO>>({ url: '/erp/finance/openings/list/page', method: 'get', params: query });
+}
+
+/** 当前主数据页的已确认期初；仅请求给定ID，不回退全量汇总或分页扫描。 */
+export function confirmedOpeningByPartyIds(
+  partyType: ErpPartyType,
+  partyIds: ErpId[]
+): Promise<ErpResult<Array<{ partyId: ErpId; amount: ErpAmount }>>> {
+  const ids = [...new Set(partyIds.map(String))];
+  if (!ids.length || ids.length > 200 || ids.some((id) => !/^\d+$/.test(id))) {
+    return Promise.reject(new Error('往来ID数量或格式无效'));
+  }
+  return request<unknown, ErpResult<Array<{ partyId: ErpId; amount: ErpAmount }>>>({
+    url: '/erp/finance/openings/confirmed/by-party-ids',
+    method: 'get',
+    params: { partyType, partyIds: ids.join(',') }
+  });
+}
+
+/** 期初往来导出：原 partyType 请求不变；完整导出至多 5000 行，超限明确失败，不截断。 */
 export function exportFinOpening(query: { partyType?: string }): AxiosPromise<Blob> {
   return request({ url: '/erp/finance/openings/export', method: 'post', params: query, responseType: 'blob' });
 }

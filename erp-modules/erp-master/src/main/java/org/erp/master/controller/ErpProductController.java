@@ -12,6 +12,10 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
+import org.erp.master.domain.bo.MasterOptionIdsBo;
+import org.erp.master.domain.bo.MasterOptionQuery;
+import org.erp.master.domain.vo.MasterOptionPageVo;
+import org.erp.master.service.MasterOptionService;
 import org.erp.master.domain.bo.ErpProductBo;
 import org.erp.master.domain.bo.ErpRecipeItemBo;
 import org.erp.master.domain.vo.ErpProductVo;
@@ -36,6 +40,7 @@ public class ErpProductController extends BaseController {
 
     private final IErpProductService productService;
     private final ProductExcelService excelService;
+    private final MasterOptionService optionService;
 
     @SaCheckPermission("erp:master:product:list")
     @GetMapping("/list")
@@ -56,10 +61,20 @@ public class ErpProductController extends BaseController {
 
     @SaCheckPermission("erp:master:product:query")
     @GetMapping("/options")
-    public R<List<ErpProductVo>> options(@RequestParam(required = false) String keyword,
-                                         @RequestParam(required = false) String type,
-                                         @RequestParam(required = false) Long categoryId) {
-        return R.ok(productService.selectList(keyword, type, categoryId));
+    public R<MasterOptionPageVo<ErpProductVo>> options(@RequestParam(required = false) String keyword,
+                                                      @RequestParam(required = false) String code,
+                                                      @RequestParam(required = false) Integer status,
+                                                      @RequestParam(required = false) String type,
+                                                      @RequestParam(required = false) Long categoryId,
+                                                      @RequestParam int pageNum,
+                                                      @RequestParam(defaultValue = MasterOptionQuery.DEFAULT_SIZE) int pageSize) {
+        return R.ok(optionService.products(MasterOptionQuery.of(keyword, code, status, pageNum, pageSize), type, categoryId));
+    }
+
+    @SaCheckPermission("erp:master:product:query")
+    @PostMapping("/options/by-ids")
+    public R<List<ErpProductVo>> optionsByIds(@RequestBody MasterOptionIdsBo request) {
+        return R.ok(optionService.productsByIds(request.ids()));
     }
 
     @SaCheckPermission("erp:master:product:add")

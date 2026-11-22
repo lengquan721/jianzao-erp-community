@@ -12,6 +12,10 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
+import org.erp.master.domain.bo.MasterOptionIdsBo;
+import org.erp.master.domain.bo.MasterOptionQuery;
+import org.erp.master.domain.vo.MasterOptionPageVo;
+import org.erp.master.service.MasterOptionService;
 import org.erp.master.domain.bo.ErpWarehouseBo;
 import org.erp.master.domain.vo.ErpWarehouseVo;
 import org.erp.master.excel.WarehouseExcelService;
@@ -35,6 +39,7 @@ public class ErpWarehouseController extends BaseController {
 
     private final IErpWarehouseService warehouseService;
     private final WarehouseExcelService excelService;
+    private final MasterOptionService optionService;
 
     @SaCheckPermission("erp:master:warehouse:list")
     @GetMapping("/list")
@@ -46,8 +51,18 @@ public class ErpWarehouseController extends BaseController {
 
     @SaCheckPermission("erp:master:warehouse:list")
     @GetMapping("/options")
-    public R<List<ErpWarehouseVo>> options(@RequestParam(required = false) String keyword) {
-        return R.ok(warehouseService.selectList(keyword));
+    public R<MasterOptionPageVo<ErpWarehouseVo>> options(@RequestParam(required = false) String keyword,
+                                                        @RequestParam(required = false) String code,
+                                                        @RequestParam(required = false) Integer status,
+                                                        @RequestParam int pageNum,
+                                                        @RequestParam(defaultValue = MasterOptionQuery.DEFAULT_SIZE) int pageSize) {
+        return R.ok(optionService.warehouses(MasterOptionQuery.of(keyword, code, status, pageNum, pageSize)));
+    }
+
+    @SaCheckPermission("erp:master:warehouse:list")
+    @PostMapping("/options/by-ids")
+    public R<List<ErpWarehouseVo>> optionsByIds(@RequestBody MasterOptionIdsBo request) {
+        return R.ok(optionService.warehousesByIds(request.ids()));
     }
 
     @SaCheckPermission("erp:master:warehouse:add")

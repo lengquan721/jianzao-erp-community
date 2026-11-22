@@ -1,168 +1,177 @@
 <template>
   <div class="p-2">
-        <transition :enter-active-class="proxy?.animate.searchAnimate.enter" :leave-active-class="proxy?.animate.searchAnimate.leave">
-          <div v-show="showSearch" class="erp-row-container">
-            <t-card :bordered="false" class="erp-filter-card" title="筛选条件" subtitle="按订单号、供应商、状态与交期组合查询">
-              <template #actions>
-                <right-toolbar v-model:show-search="showSearch" @query-table="getList"></right-toolbar>
-              </template>
-              <t-form ref="queryFormRef" :data="queryParams" class="erp-filter-row" label-align="right" :label-width="'auto'" @submit="handleQuery">
-                <t-form-item label="关键字" name="keyword">
-                  <t-tooltip :content="queryParams.keyword" :disabled="!queryParams.keyword" placement="top">
-                    <t-input v-model="queryParams.keyword" placeholder="订单号/供应商单号" clearable class="query-w-md" @enter="handleQuery" />
-                  </t-tooltip>
-                </t-form-item>
-                <t-form-item label="供应商" name="supplierId">
-                  <PartnerSelect v-model="queryParams.supplierId" kind="supplier" placeholder="全部供应商" clearable class="query-w-md" />
-                </t-form-item>
-                <t-form-item label="状态" name="status">
-                  <t-select v-model="queryParams.status" placeholder="单据状态" clearable class="query-w-sm" :options="statusOptions" />
-                </t-form-item>
-                <t-form-item label="执行状态" name="execStatus">
-                  <t-select v-model="queryParams.execStatus" placeholder="执行状态" clearable class="query-w-sm" :options="execStatusOptions" />
-                </t-form-item>
-                <t-form-item label="交期">
-                  <FieldTip content="按订单派生交期（最早未交行交期）过滤，不是承诺交期" />
-                  <t-date-range-picker
-                    v-model="dueDateRange"
-                    mode="date"
-                    value-type="YYYY-MM-DD"
-                    :placeholder="['交期起', '交期止']"
-                    class="query-w-lg"
-                  />
-                </t-form-item>
-                <t-form-item label="只看未完成">
-                  <t-switch v-model="queryParams.unfinished" />
-                </t-form-item>
-                <t-form-item label="只看已逾期">
-                  <t-switch v-model="queryParams.overdue" />
-                </t-form-item>
-                <div class="erp-filter-actions">
-                  <t-button theme="primary" @click="handleQuery">搜索</t-button>
-                  <t-button theme="default" variant="outline" @click="resetQuery">重置</t-button>
-                </div>
-              </t-form>
-            </t-card>
-          </div>
-        </transition>
-
-        <div v-if="!showSearch" class="mb-[10px] flex justify-end">
-          <right-toolbar v-model:show-search="showSearch" @query-table="getList"></right-toolbar>
-        </div>
-
-        <div class="erp-surface erp-panel">
-          <div class="erp-panel__head">
-            <div class="flex items-center justify-between w-full">
-              <t-button v-hasPermi="['erp:purchase-order:add']" theme="primary" variant="outline" @click="handleAdd">新增采购订单</t-button>
+    <transition :enter-active-class="proxy?.animate.searchAnimate.enter" :leave-active-class="proxy?.animate.searchAnimate.leave">
+      <div v-show="showSearch" class="erp-row-container">
+        <t-card :bordered="false" class="erp-filter-card" title="筛选条件" subtitle="按订单号、供应商、状态与交期组合查询">
+          <template #actions>
+            <right-toolbar v-model:show-search="showSearch" @query-table="getList"></right-toolbar>
+          </template>
+          <t-form ref="queryFormRef" :data="queryParams" class="erp-filter-row" label-align="right" :label-width="'auto'" @submit="handleQuery">
+            <t-form-item label="关键字" name="keyword">
+              <t-tooltip :content="queryParams.keyword" :disabled="!queryParams.keyword" placement="top">
+                <t-input v-model="queryParams.keyword" placeholder="订单号/供应商单号" clearable class="query-w-md" @enter="handleQuery" />
+              </t-tooltip>
+            </t-form-item>
+            <t-form-item label="供应商" name="supplierId">
+              <PartnerSelect v-model="queryParams.supplierId" kind="supplier" placeholder="全部供应商" clearable class="query-w-md" />
+            </t-form-item>
+            <t-form-item label="状态" name="status">
+              <t-select v-model="queryParams.status" placeholder="单据状态" clearable class="query-w-sm" :options="statusOptions" />
+            </t-form-item>
+            <t-form-item label="执行状态" name="execStatus">
+              <t-select v-model="queryParams.execStatus" placeholder="执行状态" clearable class="query-w-sm" :options="execStatusOptions" />
+            </t-form-item>
+            <t-form-item label="交期">
+              <FieldTip content="按订单派生交期（最早未交行交期）过滤，不是承诺交期" />
+              <t-date-range-picker
+                v-model="dueDateRange"
+                mode="date"
+                value-type="YYYY-MM-DD"
+                :placeholder="['交期起', '交期止']"
+                class="query-w-lg"
+              />
+            </t-form-item>
+            <t-form-item label="只看未完成">
+              <t-switch v-model="queryParams.unfinished" />
+            </t-form-item>
+            <t-form-item label="只看已逾期">
+              <t-switch v-model="queryParams.overdue" />
+            </t-form-item>
+            <div class="erp-filter-actions">
+              <t-button theme="primary" @click="handleQuery">搜索</t-button>
+              <t-button theme="default" variant="outline" @click="resetQuery">重置</t-button>
             </div>
-          </div>
+          </t-form>
+        </t-card>
+      </div>
+    </transition>
 
-          <t-table
-            class="erp-table"
-            row-key="id"
-            :data="orderList"
-            :columns="listColumns"
-            :loading="loading"
-            :hover="true"
-            :resizable="true"
-            size="small"
-            :empty="'暂无采购订单'"
-            @column-resize-change="(ctx: any) => saveColumnWidths('order/list', ctx.columnsWidth)"
-          >
-            <template #dueDateHeader>
-              <span>交期</span>
-              <FieldTip content="派生交期：取最早未交行的要求到货日；逾期标红一律按此日期 + 允许延迟天数判定" />
-            </template>
-            <template #no="{ row }">
-              <t-button variant="text" theme="primary" size="small" @click="handleView(row)">{{ row.no || '-' }}</t-button>
-            </template>
-            <template #bizDate="{ row }">{{ toDate(row.bizDate) || '-' }}</template>
-            <template #dueDate="{ row }">
-              <span>{{ toDate(row.dueDate) || '-' }}</span>
-              <span v-if="overdueDays(row) > 0" class="ml-1 text-danger font-medium">逾期 {{ overdueDays(row) }} 天</span>
-            </template>
-            <template #progress="{ row }">
-              <div class="flex items-center gap-2">
-                <t-progress :percentage="progressPercent(row)" :color="progressColor(row)" :stroke-width="8" :label="false" style="flex: 1" />
-                <span class="text-xs erp-text-secondary whitespace-nowrap">{{ formatQtyTrim(row.executedQty) }}/{{ formatQtyTrim(row.totalQty) }}</span>
-              </div>
-            </template>
-            <template #remainQty="{ row }">{{ remainText(row.remainQty) }}</template>
-            <template #goodsAmount="{ row }">{{ formatMoney(row.goodsAmount) }}</template>
-            <template #status="{ row }">
-              <div class="flex items-center justify-center gap-1">
-                <StatusTag kind="bill" :value="row.status" :status-text="row.statusText" />
-                <StatusTag kind="exec" :value="row.execStatus" :status-text="row.execStatusText" />
-              </div>
-            </template>
-            <template #operation="{ row }">
-              <div class="flex items-center justify-center gap-1">
-                <t-tooltip content="查看" placement="top">
-                  <t-button v-hasPermi="['erp:purchase-order:query']" theme="primary" variant="text" shape="square" size="small" @click="handleView(row)">
-                    <template #icon><BrowseIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canEdit(row)" content="编辑" placement="top">
-                  <t-button v-hasPermi="['erp:purchase-order:edit']" theme="primary" variant="text" shape="square" size="small" @click="handleEdit(row)">
-                    <template #icon><Edit1Icon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canConfirm(row)" content="确认订单" placement="top">
-                  <t-button v-hasPermi="['erp:purchase-order:audit']" theme="success" variant="text" shape="square" size="small" @click="handleConfirm(row)">
-                    <template #icon><CheckCircleIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canTransfer(row)" content="转采购入库单" placement="top">
-                  <t-button theme="primary" variant="text" shape="square" size="small" @click="openTransfer(row)">
-                    <template #icon><TicketIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canClose(row)" content="关闭剩余" placement="top">
-                  <t-button
-                    v-hasPermi="['erp:purchase-order:edit']"
-                    theme="warning"
-                    variant="text"
-                    shape="square"
-                    size="small"
-                    @click="handleCloseOrder(row)"
-                  >
-                    <template #icon><LockOnIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canWithdraw(row)" content="撤回" placement="top">
-                  <t-button
-                    v-hasPermi="['erp:purchase-order:withdraw']"
-                    theme="warning"
-                    variant="text"
-                    shape="square"
-                    size="small"
-                    @click="handleWithdraw(row)"
-                  >
-                    <template #icon><RollbackIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canVoid(row)" content="作废" placement="top">
-                  <t-button v-hasPermi="['erp:purchase-order:void']" theme="danger" variant="text" shape="square" size="small" @click="handleVoid(row)">
-                    <template #icon><CloseCircleIcon /></template>
-                  </t-button>
-                </t-tooltip>
-                <t-tooltip v-if="canDelete(row)" content="删除" placement="top">
-                  <t-button v-hasPermi="['erp:purchase-order:remove']" theme="danger" variant="text" shape="square" size="small" @click="handleDelete(row)">
-                    <template #icon><DeleteIcon /></template>
-                  </t-button>
-                </t-tooltip>
-              </div>
-            </template>
-          </t-table>
+    <div v-if="!showSearch" class="mb-[10px] flex justify-end">
+      <right-toolbar v-model:show-search="showSearch" @query-table="getList"></right-toolbar>
+    </div>
 
-          <pagination
-            v-show="total > 0"
-            v-model:page="queryParams.pageNum"
-            v-model:limit="queryParams.pageSize"
-            :total="total"
-            @pagination="getList"
-          />
+    <div class="erp-surface erp-panel">
+      <div class="erp-panel__head">
+        <div class="flex items-center justify-between w-full">
+          <t-button v-hasPermi="['erp:purchase-order:add']" theme="primary" variant="outline" @click="handleAdd">新增采购订单</t-button>
         </div>
+      </div>
+
+      <t-table
+        class="erp-table"
+        row-key="id"
+        :data="orderList"
+        :columns="listColumns"
+        :loading="loading"
+        :hover="true"
+        :resizable="true"
+        size="small"
+        :empty="'暂无采购订单'"
+        @column-resize-change="(ctx: any) => saveColumnWidths('order/list', ctx.columnsWidth)"
+      >
+        <template #dueDateHeader>
+          <span>交期</span>
+          <FieldTip content="派生交期：取最早未交行的要求到货日；逾期标红一律按此日期 + 允许延迟天数判定" />
+        </template>
+        <template #no="{ row }">
+          <t-button variant="text" theme="primary" size="small" @click="handleView(row)">{{ row.no || '-' }}</t-button>
+        </template>
+        <template #bizDate="{ row }">{{ toDate(row.bizDate) || '-' }}</template>
+        <template #dueDate="{ row }">
+          <span>{{ toDate(row.dueDate) || '-' }}</span>
+          <span v-if="overdueDays(row) > 0" class="ml-1 text-danger font-medium">逾期 {{ overdueDays(row) }} 天</span>
+        </template>
+        <template #progress="{ row }">
+          <div class="flex items-center gap-2">
+            <t-progress :percentage="progressPercent(row)" :color="progressColor(row)" :stroke-width="8" :label="false" style="flex: 1" />
+            <span class="text-xs erp-text-secondary whitespace-nowrap">{{ formatQtyTrim(row.executedQty) }}/{{ formatQtyTrim(row.totalQty) }}</span>
+          </div>
+        </template>
+        <template #remainQty="{ row }">{{ remainText(row.remainQty) }}</template>
+        <template #goodsAmount="{ row }">{{ formatMoney(row.goodsAmount) }}</template>
+        <template #executedAmount="{ row }">{{ row.executedAmount == null ? '—' : formatMoney(row.executedAmount) }}</template>
+        <template #status="{ row }">
+          <div class="flex items-center justify-center gap-1">
+            <StatusTag kind="bill" :value="row.status" :status-text="row.statusText" />
+            <StatusTag kind="exec" :value="row.execStatus" :status-text="row.execStatusText" />
+          </div>
+        </template>
+        <template #operation="{ row }">
+          <div class="flex items-center justify-center gap-1">
+            <t-tooltip content="查看" placement="top">
+              <t-button v-hasPermi="['erp:purchase-order:query']" theme="primary" variant="text" shape="square" size="small" @click="handleView(row)">
+                <template #icon><BrowseIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canEdit(row)" content="编辑" placement="top">
+              <t-button v-hasPermi="['erp:purchase-order:edit']" theme="primary" variant="text" shape="square" size="small" @click="handleEdit(row)">
+                <template #icon><Edit1Icon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canConfirm(row)" content="确认订单" placement="top">
+              <t-button
+                v-hasPermi="['erp:purchase-order:audit']"
+                theme="success"
+                variant="text"
+                shape="square"
+                size="small"
+                @click="handleConfirm(row)"
+              >
+                <template #icon><CheckCircleIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canTransfer(row)" content="转采购入库单" placement="top">
+              <t-button theme="primary" variant="text" shape="square" size="small" @click="openTransfer(row)">
+                <template #icon><TicketIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canClose(row)" content="关闭剩余" placement="top">
+              <t-button
+                v-hasPermi="['erp:purchase-order:edit']"
+                theme="warning"
+                variant="text"
+                shape="square"
+                size="small"
+                @click="handleCloseOrder(row)"
+              >
+                <template #icon><LockOnIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canWithdraw(row)" content="撤回" placement="top">
+              <t-button
+                v-hasPermi="['erp:purchase-order:withdraw']"
+                theme="warning"
+                variant="text"
+                shape="square"
+                size="small"
+                @click="handleWithdraw(row)"
+              >
+                <template #icon><RollbackIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canVoid(row)" content="作废" placement="top">
+              <t-button v-hasPermi="['erp:purchase-order:void']" theme="danger" variant="text" shape="square" size="small" @click="handleVoid(row)">
+                <template #icon><CloseCircleIcon /></template>
+              </t-button>
+            </t-tooltip>
+            <t-tooltip v-if="canDelete(row)" content="删除" placement="top">
+              <t-button
+                v-hasPermi="['erp:purchase-order:remove']"
+                theme="danger"
+                variant="text"
+                shape="square"
+                size="small"
+                @click="handleDelete(row)"
+              >
+                <template #icon><DeleteIcon /></template>
+              </t-button>
+            </t-tooltip>
+          </div>
+        </template>
+      </t-table>
+
+      <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="getList" />
+    </div>
 
     <!-- 订单详情 / 表单：页签 1 订单内容，页签 2 执行记录 -->
     <t-drawer v-model:visible="drawer.visible" size="92%" :destroy-on-close="true" attach="body">
@@ -275,7 +284,13 @@
                   <template #icon><PlusIcon /></template>
                   添加明细
                 </t-button>
-                <t-button v-if="!readonly && isConfirmedOrder && closedRows.length > 0" theme="warning" variant="outline" size="small" @click="handleReopenAll">
+                <t-button
+                  v-if="!readonly && isConfirmedOrder && closedRows.length > 0"
+                  theme="warning"
+                  variant="outline"
+                  size="small"
+                  @click="handleReopenAll"
+                >
                   <template #icon><LockOffIcon /></template>
                   全部重开
                 </t-button>
@@ -391,7 +406,7 @@
                 >订单金额（不含运费）：<b>{{ formatMoney(goodsAmount) }}</b></span
               >
               <span>
-                已执行金额（按执行单，含运费）：<b>{{ execAmountLoading ? '加载中…' : execAmountText }}</b>
+                已执行金额（含运费）：<b>{{ execAmountText }}</b>
               </span>
               <span
                 >差异（含运费/超收/退货）：<b>{{ diffAmountText }}</b></span
@@ -419,6 +434,7 @@
               <template #execType="{ row }">{{ row.typeText || (row.type === 'RETURN' ? '退货' : '入库') }}</template>
               <template #execDate="{ row }">{{ toDate(row.bizDate) || '-' }}</template>
               <template #execQty="{ row }">{{ formatQtyTrim(row.qty) }}</template>
+              <template #execAmount="{ row }">{{ row.amount == null ? '—' : formatMoney(row.amount) }}</template>
               <template #execStatus="{ row }">
                 <StatusTag
                   kind="bill"
@@ -503,7 +519,6 @@ import {
   voidPurchaseOrder,
   withdrawPurchaseOrder
 } from '@/api/erp/order';
-import { getPurchase, getPurchaseReturn } from '@/api/erp/trade';
 import { ERP_BILL_STATUS, ERP_ORDER_EXEC_STATUS, ERP_TAX_TYPE } from '@/api/erp/enums';
 import type { ErpBillStatus, ErpOrderExecStatus, ErpTaxType } from '@/api/erp/enums';
 import type {
@@ -517,6 +532,7 @@ import type {
   ErpPurchaseOrderVO
 } from '@/api/erp/types';
 import { formatMoney, formatQtyTrim, normalizeQty, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
+import { readExecutedAmount } from '@/utils/erp/tradeContracts';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { checkPermi } from '@/utils/permission';
@@ -601,6 +617,7 @@ const listColumns = computed<any[]>(() =>
     { colKey: 'progress', title: '执行进度', align: 'center', width: 180, cell: 'progress' },
     { colKey: 'remainQty', title: '未交量', align: 'right', width: 100, ellipsis: true, cell: 'remainQty' },
     { colKey: 'goodsAmount', title: '订单金额（不含运费）', align: 'right', width: 170, ellipsis: true, cell: 'goodsAmount' },
+    { colKey: 'executedAmount', title: '已执行金额（含运费）', align: 'right', width: 170, cell: 'executedAmount' },
     { colKey: 'buyerName', title: '跟单人', align: 'center', width: 100, ellipsis: true },
     { colKey: 'status', title: '状态', align: 'center', width: 160, cell: 'status' },
     // 操作列改图标按钮（DOC/35 §13）：8 个动作按状态最多同时出现 6 个，24px 图标按钮 + 4px 间距约 164px
@@ -633,6 +650,7 @@ const execColumns: any[] = [
   { colKey: 'type', title: '类型', align: 'center', width: 100, cell: 'execType' },
   { colKey: 'bizDate', title: '日期', align: 'center', width: 120, cell: 'execDate' },
   { colKey: 'qty', title: '数量', align: 'right', width: 120, cell: 'execQty' },
+  { colKey: 'amount', title: '金额（含运费）', align: 'right', width: 130, cell: 'execAmount' },
   { colKey: 'status', title: '状态', align: 'center', width: 110, cell: 'execStatus' }
 ];
 mergeSavedWidths('order/exec', execColumns);
@@ -676,8 +694,7 @@ const rows = ref<OrderRow[]>([]);
 const execList = ref<ErpPurchaseOrderExecVO[]>([]);
 const execLoading = ref(false);
 /** 已执行金额（按执行单含运费）；null=取不到执行单详情，不做估算 */
-const execAmount = ref<number | null>(0);
-const execAmountLoading = ref(false);
+const execAmount = ref<number | null>(null);
 
 const transfer = reactive({
   visible: false,
@@ -888,6 +905,7 @@ const loadDetail = async (id: ErpId) => {
     detailStatusText.value = detail.statusText ?? '';
     detailExecStatus.value = detail.execStatus ?? '';
     detailExecStatusText.value = detail.execStatusText ?? '';
+    execAmount.value = readExecutedAmount(detail);
     Object.assign(form, {
       id: detail.id,
       supplierId: detail.supplierId,
@@ -1064,46 +1082,15 @@ const submitForm = async () => {
 const loadExecutions = async (id: ErpId) => {
   execLoading.value = true;
   execList.value = [];
-  execAmount.value = 0;
   try {
     const res = await listPurchaseOrderExecutions(id);
+    // amount 已由后端按入库正值、退货负值返回；无需逐单请求明细。
     execList.value = res.data ?? [];
-    await loadExecAmount();
   } catch {
-    // 执行记录失败不阻塞订单内容展示；接口拦截器已给出错误提示
+    // 执行记录失败不阻塞订单内容；执行金额仍取订单 VO 的批量聚合值。
     execList.value = [];
-    execAmount.value = null;
   } finally {
     execLoading.value = false;
-  }
-};
-
-/** 已执行金额按执行单 total_amount（含运费）汇总，退货冲减；取不到详情或无权查看时留空不估算 */
-const loadExecAmount = async () => {
-  const bills = execList.value.filter((record) => record.status === 'CONFIRMED');
-  if (bills.length === 0) {
-    execAmount.value = 0;
-    return;
-  }
-  // 缺执行单查看权限时不发请求，避免 403 弹窗；金额显示「—」而不是估算值
-  const readable = bills.every((record) => checkPermi([record.type === 'RETURN' ? 'erp:purchase-return:query' : 'erp:purchase:query']));
-  if (!readable) {
-    execAmount.value = null;
-    return;
-  }
-  execAmountLoading.value = true;
-  try {
-    const amounts = await Promise.all(
-      bills.map(async (record) => {
-        const res = record.type === 'RETURN' ? await getPurchaseReturn(record.id) : await getPurchase(record.id);
-        return (record.type === 'RETURN' ? -1 : 1) * num(res.data?.totalAmount);
-      })
-    );
-    execAmount.value = roundMoney(amounts.reduce((sum, amount) => sum + amount, 0));
-  } catch {
-    execAmount.value = null;
-  } finally {
-    execAmountLoading.value = false;
   }
 };
 

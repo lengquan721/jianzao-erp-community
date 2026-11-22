@@ -76,6 +76,10 @@ public class SupplierExcelService {
         List<ExcelRow<SupplierImportRow>> rows;
         try (InputStream inputStream = file.getInputStream()) {
             rows = ExcelRowReader.read(inputStream, SupplierImportRow.class);
+        } catch (ExcelRowReader.ImportLimitException e) {
+            ImportResult rejected = new ImportResult();
+            rejected.fail(e.rowNumber(), e.getMessage());
+            throw new ImportRollbackException(rejected);
         }
         ImportResult result = importRows(rows, updateSupport);
         if (result.getFailed() > 0) {
@@ -113,7 +117,7 @@ public class SupplierExcelService {
             String phone = CellValues.optional(data.getPhone(), "电话", 30, errors);
             String address = CellValues.optional(data.getAddress(), "地址", 200, errors);
             String taxNo = CellValues.optional(data.getTaxNo(), "税号", 50, errors);
-            BigDecimal taxRate = CellValues.decimal(data.getTaxRate(), "默认税率", 4, false, errors);
+            BigDecimal taxRate = CellValues.decimal(data.getTaxRate(), "默认税率", 8, 4, false, errors);
             Integer status = CellValues.status(data.getStatus(), errors);
             String remark = CellValues.optional(data.getRemark(), "备注", 500, errors);
 
@@ -212,9 +216,8 @@ public class SupplierExcelService {
      * 导出映射：状态转为中文，不输出 id/tenantId/delFlag/期初应付。
      */
     List<SupplierExportVo> exportRows(String keyword, Integer status) {
-        List<ErpSupplierVo> rows = supplierService
-            .selectPage(keyword, status, new PageQuery(EXPORT_LIMIT, 1))
-            .getRows();
+        List<ErpSupplierVo> rows = PageQuery.collectForExport(EXPORT_LIMIT, query ->
+            supplierService.selectPage(keyword, status, query).getRows());
         List<SupplierExportVo> result = new ArrayList<>();
         if (rows == null) {
             return result;

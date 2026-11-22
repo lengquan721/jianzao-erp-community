@@ -132,6 +132,7 @@ create table if not exists sys_tenant_package
     package_id          int8,
     package_name        varchar(20)     default ''::varchar,
     menu_ids            varchar(3000)   default ''::varchar,
+    employee_menu_ids            varchar(3000)   default ''::varchar,
     remark              varchar(200)    default ''::varchar,
     menu_check_strictly bool            default true,
     status              char            default '0'::bpchar,

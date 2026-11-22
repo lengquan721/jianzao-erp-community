@@ -16,7 +16,6 @@ import org.dromara.common.core.constant.SystemConstants;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.web.filter.RepeatedlyRequestWrapper;
-import org.springframework.http.MediaType;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.ModelAndView;
 
@@ -24,6 +23,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.Locale;
 
 /**
  * web的调用时间统计拦截器
@@ -35,6 +35,12 @@ import java.util.Set;
 public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
 
     private final static ThreadLocal<StopWatch> KEY_CACHE = new ThreadLocal<>();
+    private static final int MAX_LOG_PAYLOAD_CHARS = 2048;
+    private static final Set<String> SENSITIVE_FIELDS = Set.of(
+        "password", "oldpassword", "newpassword", "confirmpassword", "pwd", "token", "accesstoken",
+        "refreshtoken", "authorization", "secret", "secretkey", "clientsecret", "privatekey",
+        "encrypt-key", "phone", "mobile", "taxno", "idcard", "email"
+    );
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
@@ -45,10 +51,14 @@ public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
             if (request instanceof RepeatedlyRequestWrapper) {
                 jsonParam = IoUtil.read(request.getReader());
                 if (StringUtils.isNotBlank(jsonParam)) {
-                    ObjectMapper objectMapper = JsonUtils.getObjectMapper();
-                    JsonNode rootNode = objectMapper.readTree(jsonParam);
-                    removeSensitiveFields(rootNode, SystemConstants.EXCLUDE_PROPERTIES);
-                    jsonParam = rootNode.toString();
+                    try {
+                        ObjectMapper objectMapper = JsonUtils.getObjectMapper();
+                        JsonNode rootNode = objectMapper.readTree(jsonParam);
+                        removeSensitiveFields(rootNode, SystemConstants.EXCLUDE_PROPERTIES);
+                        jsonParam = truncate(rootNode.toString());
+                    } catch (Exception invalidJson) {
+                        jsonParam = "[JSON log omitted: invalid JSON]";
+                    }
                 }
             }
             log.info("[PLUS]开始请求 => URL[{}],参数类型[json],参数:[{}]", url, jsonParam);
@@ -57,7 +67,8 @@ public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
             if (MapUtil.isNotEmpty(parameterMap)) {
                 Map<String, String[]> map = new LinkedHashMap<>(parameterMap);
                 MapUtil.removeAny(map, SystemConstants.EXCLUDE_PROPERTIES);
-                String parameters = JsonUtils.toJsonString(map);
+                map.keySet().removeIf(name -> SENSITIVE_FIELDS.contains(name.toLowerCase(Locale.ROOT)));
+                String parameters = truncate(JsonUtils.toJsonString(map));
                 log.info("[PLUS]开始请求 => URL[{}],参数类型[param],参数:[{}]", url, parameters);
             } else {
                 log.info("[PLUS]开始请求 => URL[{}],无参数", url);
@@ -80,7 +91,8 @@ public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
             // 收集要删除的字段名（避免 ConcurrentModification）
             Set<String> fieldsToRemove = new HashSet<>();
             objectNode.fieldNames().forEachRemaining(fieldName -> {
-                if (ArrayUtil.contains(excludeProperties, fieldName)) {
+                if (ArrayUtil.contains(excludeProperties, fieldName)
+                    || SENSITIVE_FIELDS.contains(fieldName.toLowerCase(Locale.ROOT))) {
                     fieldsToRemove.add(fieldName);
                 }
             });
@@ -93,6 +105,13 @@ public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
                 removeSensitiveFields(child, excludeProperties);
             }
         }
+    }
+
+    private String truncate(String value) {
+        if (value == null || value.length() <= MAX_LOG_PAYLOAD_CHARS) {
+            return value;
+        }
+        return value.substring(0, MAX_LOG_PAYLOAD_CHARS) + "…[truncated]";
     }
 
     @Override
@@ -117,11 +136,7 @@ public class PlusWebInvokeTimeInterceptor implements HandlerInterceptor {
      * @return boolean
      */
     private boolean isJsonRequest(HttpServletRequest request) {
-        String contentType = request.getContentType();
-        if (contentType != null) {
-            return StringUtils.startsWithIgnoreCase(contentType, MediaType.APPLICATION_JSON_VALUE);
-        }
-        return false;
+        return org.dromara.common.core.utils.RequestBodyLimits.isJsonContentType(request.getContentType());
     }
 
 }

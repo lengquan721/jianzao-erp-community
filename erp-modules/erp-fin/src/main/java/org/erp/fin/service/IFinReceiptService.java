@@ -19,11 +19,17 @@ public interface IFinReceiptService {
 
     FinReceiptVo insert(FinReceiptBo bo);
 
+    /** 仅在销售退货确认事务内使用，从锁定的退货单读取退款账户、金额及来源。 */
+    Long insertSaleReturnRefund(Long returnId);
+
     FinReceiptVo update(Long id, FinReceiptBo bo);
 
     void confirm(Long id);
 
     void withdraw(Long id);
+
+    /** 仅在销售退货撤回事务内使用，读取并验证该退货单实际关联的红字收款。 */
+    void withdrawSaleReturnRefund(Long returnId);
 
     void voidBill(Long id);
 

@@ -23,6 +23,8 @@ import org.mockito.MockedStatic;
 import org.springframework.context.ApplicationContext;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
@@ -84,6 +86,18 @@ class LogAspectTest {
         if (loginHelper != null) {
             loginHelper.close();
         }
+    }
+
+    @Test
+    void requestAndResponseLoggingRedactsNestedSecretsAndTruncatesPayloads() throws Exception {
+        LogAspect aspect = new LogAspect();
+        var sanitizer = LogAspect.class.getDeclaredMethod("sanitizeJson", String.class);
+        sanitizer.setAccessible(true);
+        String sanitized = (String) sanitizer.invoke(aspect,
+            "{\"name\":\"demo\",\"nested\":{\"password\":\"dont-log\",\"accessToken\":\"secret\"},\"payload\":\"" + "x".repeat(3000) + "\"}");
+        assertFalse(sanitized.contains("dont-log"));
+        assertFalse(sanitized.contains("secret"));
+        assertTrue(sanitized.length() <= 2048 + "…[truncated]".length());
     }
 
     @Test

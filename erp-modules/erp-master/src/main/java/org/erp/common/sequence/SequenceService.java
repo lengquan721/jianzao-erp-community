@@ -1,9 +1,7 @@
 package org.erp.common.sequence;
 
-import cn.hutool.core.lang.Assert;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.common.core.constant.TenantConstants;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -37,11 +35,10 @@ public class SequenceService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public String nextNo(String bizType) {
-        // D17：定时任务/导入/运维脚本等非请求线程下 TenantHelper 可能返回 null，兜底到默认租户；
-        // 否则 where tenant_id = null 匹配 0 行、insert 撞 NOT NULL 被吞、重试仍失败，最终误报 40903。
-        String tenantId = Assert.notBlank(
-            StringUtils.blankToDefault(TenantHelper.getTenantId(), TenantConstants.DEFAULT_TENANT_ID),
-            "单号生成失败（40903）：租户未解析");
+        String tenantId = TenantHelper.getTenantId();
+        if (StringUtils.isBlank(tenantId)) {
+            throw new ServiceException("单号生成失败（40903）：租户未解析");
+        }
         String seqDate = LocalDate.now().format(FMT);
         int rows = jdbcTemplate.update(
             "update sys_sequence set current_value = current_value + 1 " +

@@ -24,7 +24,7 @@ public class ApiDecryptAutoConfiguration {
     @FilterRegistration(
         name = "cryptoFilter",
         urlPatterns = "/*",
-        order = FilterRegistrationBean.HIGHEST_PRECEDENCE,
+        order = FilterRegistrationBean.HIGHEST_PRECEDENCE + 1,
         dispatcherTypes = DispatcherType.REQUEST
     )
     public CryptoFilter cryptoFilter(ApiDecryptProperties properties) {

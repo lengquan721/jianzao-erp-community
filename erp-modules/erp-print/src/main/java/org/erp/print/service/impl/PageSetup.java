@@ -68,12 +68,39 @@ public final class PageSetup {
 
     private static String customRule(String paper) {
         Matcher m = CUSTOM_SIZE.matcher(paper);
-        if (!m.matches()) {
+        if (!m.matches() || !validDimension(m.group(1)) || !validDimension(m.group(2))) {
             return null;
         }
-        // 注入规则追加在 head 末尾，模板自身 @page 靠 CSS 级联被最后规则覆盖
         String margin = PIN_FEED_PAPERS.contains(paper) ? "margin: 5mm 8mm;" : "margin: 8mm;";
         return "@page { size: " + m.group(1) + "mm " + m.group(2) + "mm; " + margin + " }";
+    }
+
+    /** Design-schema @page size formatter: only standard paper or bounded numeric millimeter pairs. */
+    public static String safePageSize(String paper) {
+        if (paper == null || paper.isBlank()) {
+            return "A4";
+        }
+        String normalized = paper.trim().toLowerCase(Locale.ROOT);
+        if ("a4".equals(normalized)) {
+            return "A4";
+        }
+        if ("a5".equals(normalized)) {
+            return "A5";
+        }
+        Matcher m = CUSTOM_SIZE.matcher(normalized);
+        if (!m.matches() || !validDimension(m.group(1)) || !validDimension(m.group(2))) {
+            return "A4";
+        }
+        return m.group(1) + "mm " + m.group(2) + "mm";
+    }
+
+    private static boolean validDimension(String value) {
+        try {
+            double dimension = Double.parseDouble(value);
+            return Double.isFinite(dimension) && dimension >= 40 && dimension <= 2000;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     /**

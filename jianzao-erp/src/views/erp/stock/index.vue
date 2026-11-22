@@ -7,72 +7,84 @@
     </t-tabs>
 
     <template v-if="activeTab !== 'ALERT'">
-    <t-row :gutter="20">
-      <t-col :span="12">
-        <transition :enter-active-class="proxy?.animate.searchAnimate.enter" :leave-active-class="proxy?.animate.searchAnimate.leave">
-          <div v-show="showSearch" class="erp-row-container">
-            <t-card :bordered="false" class="erp-filter-card" title="筛选条件">
-              <t-form ref="queryFormRef" :data="queryParams" class="erp-filter-row" label-align="right" :label-width="'auto'">
-                <t-form-item label="产品关键字" name="keyword">
-                  <t-input v-model="queryParams.keyword" placeholder="请输入产品编码或名称" clearable class="query-w-lg" @enter="handleQuery" />
-                </t-form-item>
-                <div class="erp-filter-actions">
-                  <t-button theme="primary" @click="handleQuery">
-                    <template #icon><SearchIcon /></template>
-                    搜索
+      <t-row :gutter="20">
+        <t-col :span="12">
+          <transition :enter-active-class="proxy?.animate.searchAnimate.enter" :leave-active-class="proxy?.animate.searchAnimate.leave">
+            <div v-show="showSearch" class="erp-row-container">
+              <t-card :bordered="false" class="erp-filter-card" title="筛选条件">
+                <t-form ref="queryFormRef" :data="queryParams" class="erp-filter-row" label-align="right" :label-width="'auto'">
+                  <t-form-item label="产品关键字" name="keyword">
+                    <t-input
+                      v-model="queryParams.keyword"
+                      placeholder="请输入产品编码、名称或规格"
+                      :maxlength="100"
+                      clearable
+                      class="query-w-lg"
+                      @enter="handleQuery"
+                    />
+                  </t-form-item>
+                  <div class="erp-filter-actions">
+                    <t-button theme="primary" @click="handleQuery">
+                      <template #icon><SearchIcon /></template>
+                      搜索
+                    </t-button>
+                    <t-button theme="default" variant="outline" @click="resetQuery">
+                      <template #icon><RefreshIcon /></template>
+                      重置
+                    </t-button>
+                  </div>
+                </t-form>
+              </t-card>
+            </div>
+          </transition>
+
+          <div class="erp-surface erp-panel">
+            <div class="erp-panel__head">
+              <span class="erp-text-secondary"> {{ activeType === 'PRODUCT' ? '成品库存' : '原料库存' }}（共 {{ total }} 条） </span>
+              <right-toolbar v-model:show-search="showSearch" @query-table="getList" />
+            </div>
+
+            <t-table
+              class="erp-table"
+              row-key="balanceKey"
+              :data="stockList"
+              :columns="balanceColumns"
+              :loading="loading"
+              :hover="true"
+              :resizable="true"
+              size="small"
+              bordered
+              cell-empty-content="-"
+              :empty="balanceFailed ? '库存余额加载失败，请重试' : '暂无库存数据'"
+              @column-resize-change="(ctx: any) => saveColumnWidths('stock/balance', ctx.columnsWidth)"
+            >
+              <template #warehouseId="{ row }">{{ row.warehouseId ?? '-' }}</template>
+              <template #qty="{ row }">{{ formatQty(row.qty) }}</template>
+              <template #avgCost="{ row }">
+                <div>{{ formatMoney(row.avgCost) }}</div>
+                <t-tooltip v-if="row.costMissing" content="有库存但成本为 0，出库毛利将按 100% 计" placement="top">
+                  <t-tag theme="danger" size="small">成本缺失</t-tag>
+                </t-tooltip>
+              </template>
+              <template #stockAmount="{ row }">{{ formatMoney(row.stockAmount) }}</template>
+              <template #operation="{ row }">
+                <t-tooltip v-if="checkPermi(['erp:stock:query'])" content="明细" placement="top">
+                  <t-button theme="primary" variant="text" shape="square" size="small" @click="handleDetail(row)">
+                    <template #icon><BrowseIcon /></template>
                   </t-button>
-                  <t-button theme="default" variant="outline" @click="resetQuery">
-                    <template #icon><RefreshIcon /></template>
-                    重置
-                  </t-button>
-                </div>
-              </t-form>
-            </t-card>
+                </t-tooltip>
+              </template>
+            </t-table>
+            <pagination
+              v-show="total > 0"
+              v-model:page="queryParams.pageNum"
+              v-model:limit="queryParams.pageSize"
+              :total="total"
+              @pagination="getList"
+            />
           </div>
-        </transition>
-
-        <div class="erp-surface erp-panel">
-          <div class="erp-panel__head">
-            <span class="erp-text-secondary">
-              {{ activeType === 'PRODUCT' ? '成品库存' : '原料库存' }}（共 {{ stockList.length }} 条，不分页）
-            </span>
-            <right-toolbar v-model:show-search="showSearch" @query-table="getList" />
-          </div>
-
-          <t-table
-            class="erp-table"
-            row-key="productId"
-            :data="stockList"
-            :columns="balanceColumns"
-            :loading="loading"
-            :hover="true"
-            :resizable="true"
-            size="small"
-            bordered
-            cell-empty-content="-"
-            :empty="'暂无库存数据'"
-            @column-resize-change="(ctx: any) => saveColumnWidths('stock/balance', ctx.columnsWidth)"
-          >
-            <template #qty="{ row }">{{ formatQty(row.qty) }}</template>
-            <template #avgCost="{ row }">
-              <div>{{ formatMoney(row.avgCost) }}</div>
-              <t-tooltip v-if="row.costMissing" content="有库存但成本为 0，出库毛利将按 100% 计" placement="top">
-                <t-tag theme="danger" size="small">成本缺失</t-tag>
-              </t-tooltip>
-            </template>
-            <template #stockAmount="{ row }">{{ formatMoney(row.stockAmount) }}</template>
-            <template #operation="{ row }">
-              <t-tooltip v-if="checkPermi(['erp:stock:query'])" content="明细" placement="top">
-                <t-button theme="primary" variant="text" shape="square" size="small" @click="handleDetail(row)">
-                  <template #icon><BrowseIcon /></template>
-                </t-button>
-              </t-tooltip>
-            </template>
-          </t-table>
-        </div>
-      </t-col>
-    </t-row>
-
+        </t-col>
+      </t-row>
     </template>
 
     <!-- 库存预警（DOC/25 §4.2） -->
@@ -122,6 +134,12 @@
           <t-descriptions-item label="产品名称">{{ drawer.productName || '-' }}</t-descriptions-item>
           <t-descriptions-item label="当前库存">{{ formatQty(drawer.qty) }}</t-descriptions-item>
         </t-descriptions>
+        <div class="mb-3 flex flex-wrap items-center gap-2">
+          <span class="erp-text-secondary">业务日期</span>
+          <t-date-range-picker v-model="logDates" value-type="YYYY-MM-DD" :clearable="false" @change="resetLogs" />
+          <t-select v-model="logPageSize" :options="logPageSizes" style="width: 120px" @change="resetLogs" />
+          <span class="erp-text-secondary">按产品查看全仓流水，每次最多查 366 天</span>
+        </div>
 
         <t-table
           class="erp-table"
@@ -134,10 +152,10 @@
           size="small"
           bordered
           cell-empty-content="-"
-          :empty="'该产品暂无库存流水'"
+          :empty="logError || '该产品在所选日期内暂无库存流水'"
           @column-resize-change="(ctx: any) => saveColumnWidths('stock/logs', ctx.columnsWidth)"
         >
-          <template #bizDate="{ row }">{{ toDate(row.bizDate) }}</template>
+          <template #bizDate="{ row }">{{ row.bizDate || '-' }}</template>
           <template #bizType="{ row }">
             <t-tag :theme="bizTypeTheme(row.bizType)" size="small">{{ bizTypeMeta(row.bizType)?.label ?? row.bizType }}</t-tag>
           </template>
@@ -146,6 +164,12 @@
           <template #amount="{ row }">{{ formatMoney(row.amount) }}</template>
           <template #balanceAfter="{ row }">{{ formatQty(row.balanceAfter) }}</template>
         </t-table>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="erp-text-secondary">第 {{ logPage }} 页</span>
+          <t-button size="small" variant="outline" :disabled="logLoading || logPage === 1" @click="loadLogPage(logPage - 1)">上一页</t-button>
+          <t-button size="small" variant="outline" :disabled="logLoading || !nextLogCursor" @click="nextLogPage">下一页</t-button>
+          <t-button v-if="logError" size="small" variant="text" :disabled="logLoading" @click="loadLogPage(logPage)">重试</t-button>
+        </div>
       </div>
     </t-drawer>
   </div>
@@ -154,8 +178,17 @@
 <script setup name="ErpStock" lang="ts">
 import { listStockAlerts, listStockBalances, listStockLogs } from '@/api/erp/stock';
 import { ERP_STOCK_BIZ_TYPE } from '@/api/erp/enums';
-import type { ErpStockBizType } from '@/api/erp/enums';
-import type { ErpAmount, ErpProductType, ErpStockAlertVO, ErpStockLogVO, ErpStockVO } from '@/api/erp/types';
+import type {
+  ErpAmount,
+  ErpId,
+  ErpProductType,
+  ErpStockAlertVO,
+  ErpStockBizType,
+  ErpStockLogCursor,
+  ErpStockLogQuery,
+  ErpStockLogVO,
+  ErpStockVO
+} from '@/api/erp/types';
 import { formatMoney, formatQty } from '@/utils/erp/calc';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
@@ -171,6 +204,7 @@ const balanceColumns: any[] = [
   { colKey: 'productName', title: '产品名称', align: 'center', minWidth: 160, ellipsis: true },
   { colKey: 'spec', title: '规格', align: 'center', width: 120, ellipsis: true },
   { colKey: 'unit', title: '单位', align: 'center', width: 70 },
+  { colKey: 'warehouseId', title: '仓库ID', align: 'center', width: 140, ellipsis: true, cell: 'warehouseId' },
   { colKey: 'qty', title: '当前库存', align: 'right', width: 120, cell: 'qty' },
   { colKey: 'avgCost', title: '平均成本', align: 'right', width: 120, cell: 'avgCost' },
   { colKey: 'stockAmount', title: '库存金额', align: 'right', width: 130, cell: 'stockAmount' },
@@ -204,10 +238,16 @@ const logColumns: any[] = [
 ];
 mergeSavedWidths('stock/logs', logColumns);
 
-const stockList = ref<ErpStockVO[]>([]);
+interface StockBalanceRow extends ErpStockVO {
+  balanceKey: string;
+}
+const stockList = ref<StockBalanceRow[]>([]);
 const logList = ref<ErpStockLogVO[]>([]);
 const loading = ref(true);
 const logLoading = ref(false);
+const balanceFailed = ref(false);
+const total = ref(0);
+let balanceRequest = 0;
 const showSearch = ref(true);
 /** 查询表单：已换 t-form，ref 提供 reset()（EP 是 resetFields()） */
 const queryFormRef = ref<any>();
@@ -238,9 +278,27 @@ const loadAlerts = async () => {
   }
 };
 
-const queryParams = reactive({
-  keyword: ''
-});
+const queryParams = reactive({ pageNum: 1, pageSize: 20, keyword: '' });
+let appliedKeyword = '';
+
+const localDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const logEnd = new Date();
+const logStart = new Date(logEnd.getFullYear(), logEnd.getMonth(), logEnd.getDate());
+logStart.setDate(logStart.getDate() - 365);
+const logDates = ref<[string, string]>([localDate(logStart), localDate(logEnd)]);
+const logPageSize = ref(50);
+const logPageSizes = [50, 100].map((value) => ({ label: `${value} 条/页`, value }));
+const logPage = ref(1);
+const logCursors = new Map<number, ErpStockLogCursor>();
+const nextLogCursor = ref<ErpStockLogCursor | null>(null);
+const logError = ref('');
+let logRequest = 0;
+let logProductId: ErpId | undefined;
 
 const drawer = reactive({
   visible: false,
@@ -249,9 +307,6 @@ const drawer = reactive({
   productName: '',
   qty: 0 as ErpAmount
 });
-
-/** 日期只取 yyyy-MM-dd */
-const toDate = (value: string | undefined): string => (value ? String(value).slice(0, 10) : '');
 
 /** 流水业务类型中文 */
 const bizTypeMeta = (value?: string) => (value ? ERP_STOCK_BIZ_TYPE[value as ErpStockBizType] : undefined);
@@ -268,60 +323,112 @@ const BIZ_TYPE_THEME: Record<string, 'default' | 'primary' | 'warning' | 'danger
 /** 流水业务类型标签主题 */
 const bizTypeTheme = (value?: string) => BIZ_TYPE_THEME[bizTypeMeta(value)?.type ?? 'info'] ?? 'default';
 
-/** 加载库存余额（后端返回全量数组，不分页，keyword / type 由后端过滤） */
+/** 库存余额真分页；筛选/切标签回第一页，保存后刷新不伪造全量。 */
 const getList = async () => {
+  const seq = ++balanceRequest;
   loading.value = true;
+  balanceFailed.value = false;
   try {
     const res = await listStockBalances({
-      keyword: queryParams.keyword.trim() || undefined,
+      pageNum: queryParams.pageNum,
+      pageSize: queryParams.pageSize,
+      keyword: appliedKeyword || undefined,
       type: activeType.value
     });
-    stockList.value = res.data ?? [];
+    if (seq !== balanceRequest) return;
+    stockList.value = res.rows.map((row) => ({ ...row, balanceKey: `${row.productId}:${row.warehouseId ?? ''}` }));
+    total.value = res.total;
   } catch {
-    stockList.value = [];
+    if (seq === balanceRequest) {
+      stockList.value = [];
+      total.value = 0;
+      balanceFailed.value = true;
+    }
   } finally {
-    loading.value = false;
+    if (seq === balanceRequest) loading.value = false;
   }
 };
 
 /** 搜索按钮操作 */
 const handleQuery = () => {
-  getList();
+  queryParams.pageNum = 1;
+  appliedKeyword = queryParams.keyword.trim();
+  void getList();
 };
 
 /** 重置按钮操作 */
 const resetQuery = () => {
   queryFormRef.value?.reset();
   queryParams.keyword = '';
-  getList();
+  handleQuery();
 };
 
 /** 切换成品/原料/预警页签 */
 const handleTabChange = () => {
   if (activeTab.value === 'ALERT') {
-    loadAlerts();
+    ++balanceRequest;
+    void loadAlerts();
   } else {
-    getList();
+    handleQuery();
   }
 };
 
+/** 流水使用必填日期窗口、最多 366 日及后端复合游标，页面只存当前日期窗口的游标栈。 */
+const loadLogPage = async (page: number) => {
+  if (logProductId == null) return;
+  const seq = ++logRequest;
+  logPage.value = page;
+  logList.value = [];
+  nextLogCursor.value = null;
+  logError.value = '';
+  const [startDate, endDate] = logDates.value ?? [];
+  // 日期窗是日历日，不按本地时区的小时差（夏令时切换可能不足 24 小时）。
+  const days = (Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${startDate}T00:00:00Z`)) / 86400000 + 1;
+  if (!(days >= 1 && days <= 366)) {
+    logLoading.value = false;
+    logError.value = '请选择不超过 366 天的连续日期范围';
+    return;
+  }
+  const cursor = logCursors.get(page);
+  if (page > 1 && !cursor) return;
+  logLoading.value = true;
+  try {
+    const query: ErpStockLogQuery = cursor
+      ? { productId: logProductId, startDate, endDate, pageSize: logPageSize.value, beforeDate: cursor.beforeDate, beforeId: cursor.beforeId }
+      : { productId: logProductId, startDate, endDate, pageSize: logPageSize.value };
+    const { data } = await listStockLogs(query);
+    if (seq !== logRequest) return;
+    logList.value = data.rows;
+    if (data.hasMore && data.nextBeforeDate && data.nextBeforeId != null) {
+      const next = { beforeDate: data.nextBeforeDate, beforeId: data.nextBeforeId };
+      logCursors.set(page + 1, next);
+      nextLogCursor.value = next;
+    }
+  } catch {
+    if (seq === logRequest) logError.value = '库存流水加载失败，请重试';
+  } finally {
+    if (seq === logRequest) logLoading.value = false;
+  }
+};
+
+const nextLogPage = () => {
+  if (nextLogCursor.value) void loadLogPage(logPage.value + 1);
+};
+
+const resetLogs = () => {
+  logCursors.clear();
+  void loadLogPage(1);
+};
+
 /** 查看库存流水明细 */
-const handleDetail = async (row: ErpStockVO) => {
+const handleDetail = (row: ErpStockVO) => {
+  logProductId = row.productId;
   drawer.visible = true;
   drawer.title = `库存流水明细 - ${row.productName || row.productCode || ''}`;
   drawer.productCode = row.productCode || '';
   drawer.productName = row.productName || '';
   drawer.qty = row.qty;
-  logList.value = [];
-  logLoading.value = true;
-  try {
-    const res = await listStockLogs(row.productId);
-    logList.value = res.data ?? [];
-  } catch {
-    logList.value = [];
-  } finally {
-    logLoading.value = false;
-  }
+  resetLogs();
 };
 
 onMounted(() => {

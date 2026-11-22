@@ -47,8 +47,14 @@ public class CryptoFilter implements Filter {
             // 是否存在加密标头
             String headerValue = servletRequest.getHeader(properties.getHeaderFlag());
             if (StringUtils.isNotBlank(headerValue)) {
-                // 请求解密
-                requestWrapper = new DecryptRequestBodyWrapper(servletRequest, properties.getPrivateKey(), properties.getHeaderFlag());
+                // 请求解密；解密后的明文仍受 JSON/打印设计体积限制。
+                try {
+                    requestWrapper = new DecryptRequestBodyWrapper(
+                        servletRequest, properties.getPrivateKey(), properties.getHeaderFlag());
+                } catch (org.dromara.common.core.utils.RequestBodyLimits.BodyTooLargeException e) {
+                    servletResponse.sendError(HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
+                    return;
+                }
             } else {
                 // 是否有注解，有就报错，没有放行
                 if (ObjectUtil.isNotNull(apiEncrypt)) {

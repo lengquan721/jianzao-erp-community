@@ -200,7 +200,9 @@
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">{{ readonly ? '关 闭' : '取 消' }}</t-button>
             <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存草稿</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:finance:payment:confirm'])" theme="success" :disabled="!balanced" @click="submitForm(true)">保存并确认</t-button>
+            <t-button v-if="!readonly && checkPermi(['erp:finance:payment:confirm'])" theme="success" :disabled="!balanced" @click="submitForm(true)"
+              >保存并确认</t-button
+            >
           </div>
         </div>
       </template>
@@ -222,7 +224,8 @@ import {
 } from '@/api/erp/finance';
 import { ERP_AR_AP_SOURCE_TYPE, ERP_BILL_STATUS } from '@/api/erp/enums';
 import { accountOptions as accountOptionsFn } from '@/api/erp/account';
-import type { ErpAmount, ErpArApSourceType, ErpBillStatus, ErpId, FinAccountVO, FinArApVO, FinPaymentForm, FinPaymentVO } from '@/api/erp/types';
+import type { FinAccountOption } from '@/api/erp/account';
+import type { ErpAmount, ErpArApSourceType, ErpBillStatus, ErpId, FinArApVO, FinPaymentForm, FinPaymentVO } from '@/api/erp/types';
 import { formatMoney, isAllocationBalanced, roundMoney, sumAllocation } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
@@ -293,7 +296,7 @@ const allocColumns: any[] = [
 mergeSavedWidths('finance-payment/alloc', allocColumns);
 
 /** 启用账户下拉（DOC/25 §4.5，页面加载取一次） */
-const accountOptions = ref<FinAccountVO[]>([]);
+const accountOptions = ref<FinAccountOption[]>([]);
 /** 账户下拉选项：t-select 需要 { label, value }，不能用 v-for el-option */
 const accountSelectOptions = computed(() => accountOptions.value.map((acc) => ({ label: acc.name, value: acc.id })));
 const loadAccountOptions = async () => {
@@ -375,13 +378,32 @@ const allocSum = computed(() => sumAllocation(selectedAllocations.value));
 /** 核销合计是否与付款金额平衡 */
 const balanced = computed(() => isAllocationBalanced(form.amount, selectedAllocations.value));
 
+/** 详情与台账共用归属序号，关闭、重开与卸载也会失效。 */
+let ledgerSeq = 0;
+watch(
+  () => dialog.visible,
+  (visible) => {
+    if (!visible) {
+      ++ledgerSeq;
+      allocRows.value = [];
+      detailLoading.value = false;
+    }
+  },
+  { flush: 'sync' }
+);
+onBeforeUnmount(() => {
+  ++ledgerSeq;
+});
+
 /** 加载供应商未结清台账 */
 const loadLedger = async (supplierId?: ErpId) => {
+  const seq = ++ledgerSeq;
   allocRows.value = [];
-  if (!supplierId) return;
-  detailLoading.value = true;
+  detailLoading.value = !!supplierId;
+  if (!supplierId) return seq;
   try {
-    const res = await arApDetail('AP', supplierId);
+    const res = await arApDetail('AP', supplierId, true);
+    if (seq !== ledgerSeq) return seq;
     const list = (res.data ?? []) as FinArApVO[];
     allocRows.value = list
       .filter((item) => item.status !== 'VOID' && num(item.unsettledAmount) > 0)
@@ -397,25 +419,28 @@ const loadLedger = async (supplierId?: ErpId) => {
         allocAmount: 0
       }));
   } catch {
-    allocRows.value = [];
+    if (seq === ledgerSeq) allocRows.value = [];
   } finally {
-    detailLoading.value = false;
+    if (seq === ledgerSeq) detailLoading.value = false;
   }
+  return seq;
 };
 
 /** 回显已保存的核销明细并与台账合并 */
-const applyAllocations = (allocations: { arApId: ErpId; amount: ErpAmount }[]) => {
+const applyAllocations = (allocations: { arApId: ErpId; amount: ErpAmount; sourceNo?: string; sourceType?: string }[]) => {
   (allocations ?? []).forEach((alloc) => {
     const hit = allocRows.value.find((row) => String(row.arApId) === String(alloc.arApId));
     if (hit) {
+      hit.sourceNo ||= alloc.sourceNo;
+      hit.sourceType ||= alloc.sourceType;
       hit.checked = true;
       hit.allocAmount = num(alloc.amount);
     } else {
       allocRows.value.push({
         arApId: alloc.arApId,
         bizDate: undefined,
-        sourceNo: undefined,
-        sourceType: undefined,
+        sourceNo: alloc.sourceNo,
+        sourceType: alloc.sourceType,
         amount: 0,
         settledAmount: 0,
         unsettledAmount: num(alloc.amount),
@@ -455,6 +480,8 @@ const resetQuery = () => {
 
 /** 表单重置 */
 const resetForm = () => {
+  ++ledgerSeq;
+  detailLoading.value = false;
   Object.assign(form, createForm());
   allocRows.value = [];
   readonly.value = false;
@@ -476,9 +503,11 @@ const handlePartyChange = async () => {
 
 /** 载入详情 */
 const loadDetail = async (id: ErpId, isReadonly: boolean) => {
+  let seq = ++ledgerSeq;
   detailLoading.value = true;
   try {
     const res = await getPayment(id);
+    if (seq !== ledgerSeq) return;
     const detail = res.data;
     Object.assign(form, {
       id: detail.id,
@@ -490,10 +519,11 @@ const loadDetail = async (id: ErpId, isReadonly: boolean) => {
       remark: detail.remark || ''
     });
     readonly.value = isReadonly;
-    await loadLedger(detail.supplierId);
+    seq = await loadLedger(detail.supplierId);
+    if (seq !== ledgerSeq) return;
     applyAllocations(detail.allocations ?? []);
   } finally {
-    detailLoading.value = false;
+    if (seq === ledgerSeq) detailLoading.value = false;
   }
 };
 
@@ -531,7 +561,7 @@ const submitForm = async (confirm: boolean) => {
   // t-form 的 validate() 失败不 reject：全通过才回 true，其余回错误对象（es/form/form.mjs formatValidateResult）
   const r = await paymentFormRef.value?.validate().catch(() => false);
   const ok = r === true || r === undefined;
-  if (!ok) return;
+  if (!ok || readonly.value || (confirm && !checkPermi(['erp:finance:payment:confirm']))) return;
   if (!form.supplierId) {
     proxy?.$modal.msgWarning('请选择供应商');
     return;
@@ -541,7 +571,7 @@ const submitForm = async (confirm: boolean) => {
     return;
   }
   // 结算账户：新建必填；存量单沿用 account 文本（与后端 saveHead 口径一致）
-  if (!form.accountId && !form.accountText) {
+  if ((!form.id && !form.accountId) || (form.id && !form.accountId && !form.accountText)) {
     proxy?.$modal.msgWarning('请选择结算账户');
     return;
   }

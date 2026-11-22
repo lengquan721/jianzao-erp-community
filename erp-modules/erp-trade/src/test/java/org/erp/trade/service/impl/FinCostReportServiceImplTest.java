@@ -1,29 +1,39 @@
 package org.erp.trade.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.Wrapper;
-import org.erp.fin.domain.FinCostLedger;
-import org.erp.fin.mapper.FinCostLedgerMapper;
-import org.erp.trade.domain.ErpSale;
-import org.erp.trade.domain.ErpSaleItem;
-import org.erp.trade.domain.ErpSaleReturn;
+import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.erp.stock.service.IInventoryService;
+import org.erp.trade.domain.vo.DashboardAggregateVo;
+import org.erp.trade.mapper.DashboardAggregateMapper;
 import org.erp.trade.mapper.ErpSaleItemMapper;
-import org.erp.trade.mapper.ErpSaleMapper;
+import org.erp.trade.mapper.ErpSaleReturnMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
-import java.util.List;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Date;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -34,55 +44,45 @@ import static org.mockito.Mockito.when;
 @Tag("dev")
 class FinCostReportServiceImplTest {
 
-    @Mock
-    private FinCostLedgerMapper costLedgerMapper;
-    @Mock
-    private ErpSaleMapper saleMapper;
+    private static final String TENANT_ID = "700007";
 
     @Mock
-    private org.erp.trade.mapper.ErpSaleReturnMapper saleReturnMapper;
+    private DashboardAggregateMapper dashboardAggregateMapper;
+    @Mock
+    private ErpSaleReturnMapper saleReturnMapper;
 
     @Mock
     private ErpSaleItemMapper saleItemMapper;
 
     @Mock
-    private org.erp.stock.service.IInventoryService inventoryService;
+    private IInventoryService inventoryService;
 
+    private MockedStatic<TenantHelper> tenantMock;
     private FinCostReportServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        // MyBatis-Plus Lambda wrapper 需要实体 TableInfo 缓存（纯单测无 Spring 环境）
-        initTableInfo(FinCostLedger.class);
-        initTableInfo(ErpSale.class);
-        initTableInfo(ErpSaleReturn.class);
-        initTableInfo(ErpSaleItem.class);
-        service = new FinCostReportServiceImpl(costLedgerMapper, saleMapper, saleReturnMapper, saleItemMapper, inventoryService);
-        when(costLedgerMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
-        when(saleReturnMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
-        when(saleItemMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        tenantMock = mockStatic(TenantHelper.class);
+        tenantMock.when(TenantHelper::getTenantId).thenReturn(TENANT_ID);
+        service = new FinCostReportServiceImpl(dashboardAggregateMapper, saleItemMapper, inventoryService);
+        when(dashboardAggregateMapper.costLedgerSum(any(), any(), any(), any())).thenReturn(emptyAggregate());
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any())).thenReturn(emptyAggregate());
+        when(saleItemMapper.countMissingCostBySaleWindow(any(), any(), any())).thenReturn(0L);
         when(inventoryService.totalStockAmount()).thenReturn(BigDecimal.ZERO);
     }
 
-    private static void initTableInfo(Class<?> clazz) {
-        if (com.baomidou.mybatisplus.core.metadata.TableInfoHelper.getTableInfo(clazz) == null) {
-            org.apache.ibatis.builder.MapperBuilderAssistant assistant =
-                new org.apache.ibatis.builder.MapperBuilderAssistant(
-                    new org.apache.ibatis.session.Configuration(), "");
-            assistant.setCurrentNamespace(clazz.getName());
-            com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, clazz);
-        }
+    @AfterEach
+    void tearDown() {
+        tenantMock.close();
     }
 
     @Test
     void report_sumsSalesCostAndTwoLedgerCostTypes_andSales() {
-        // sumLedger 依次查 PRODUCTION_MATERIAL / OTHER_OUT / OTHER_EXPENSE，按调用序返回各 9000/600/300
-        when(costLedgerMapper.selectList(any(Wrapper.class))).thenReturn(
-                List.of(ledger("9000.00")), List.of(ledger("600.00")), List.of(ledger("300.00")));
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
-                sale("20000.00", "9000.00"), sale("15000.00", "7000.00")
-            ));
+        // 数据库聚合依次返回 PRODUCTION_MATERIAL / OTHER_OUT / OTHER_EXPENSE = 9000/600/300。
+        when(dashboardAggregateMapper.costLedgerSum(any(), any(), any(), any())).thenReturn(
+            aggregate("9000.00", null), aggregate("600.00", null), aggregate("300.00", null));
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("35000.00", "16000.00"));
 
         var vo = service.report("2026-10");
 
@@ -101,9 +101,10 @@ class FinCostReportServiceImplTest {
 
     @Test
     void report_生产材料成本不计入总成本() {
-        when(costLedgerMapper.selectList(any(Wrapper.class))).thenReturn(
-                List.of(ledger("5000.00")), List.of(), List.of());
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sale("10000.00", "0")));
+        when(dashboardAggregateMapper.costLedgerSum(any(), any(), any(), any())).thenReturn(
+            aggregate("5000.00", null), emptyAggregate(), emptyAggregate());
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("10000.00", "0"));
 
         var vo = service.report("2026-10");
 
@@ -114,7 +115,8 @@ class FinCostReportServiceImplTest {
 
     @Test
     void report_销售成本为空视为0() {
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sale("5000.00", null)));
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("5000.00", null));
 
         var vo = service.report("2026-10");
 
@@ -123,10 +125,16 @@ class FinCostReportServiceImplTest {
         assertEquals(0, new BigDecimal("5000.00").compareTo(vo.getGrossProfit()));
     }
 
-    @Test
-    void report_无销售时毛利率为null() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void report_无销售与退货时毛利率为null(boolean hasReturnProjection) {
+        when(dashboardAggregateMapper.salesReturnCostSummary(any(), any(), any()))
+            .thenReturn(hasReturnProjection ? emptyAggregate() : null);
+
         var vo = service.report("2026-09");
 
+        assertEquals(new BigDecimal("0.00"), vo.getSaleReturnAmount());
+        assertEquals(new BigDecimal("0.00"), vo.getSaleReturnCostAmount());
         assertEquals(0, BigDecimal.ZERO.compareTo(vo.getSalesAmount()));
         assertEquals(0, BigDecimal.ZERO.compareTo(vo.getTotalCost()));
         assertEquals(0, BigDecimal.ZERO.compareTo(vo.getGrossProfit()));
@@ -147,10 +155,9 @@ class FinCostReportServiceImplTest {
 
     @Test
     void report_统计本期成本缺失销售明细行数() {
-        ErpSale sale = sale("10000.00", "0");
-        sale.setId(5L);
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sale));
-        when(saleItemMapper.selectCount(any(Wrapper.class))).thenReturn(2L);
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("10000.00", "0"));
+        when(saleItemMapper.countMissingCostBySaleWindow(any(), any(), any())).thenReturn(2L);
 
         var vo = service.report("2026-10");
 
@@ -167,9 +174,8 @@ class FinCostReportServiceImplTest {
 
     @Test
     void report_毛利率与销售单口径一致() {
-        when(costLedgerMapper.selectList(any(Wrapper.class))).thenReturn(
-                List.of(), List.of(), List.of());
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sale("10000.00", "2500.00")));
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("10000.00", "2500.00"));
 
         var vo = service.report("2026-10");
 
@@ -180,14 +186,114 @@ class FinCostReportServiceImplTest {
 
     @Test
     void report_毛利率保留两位小数HALF_UP() {
-        when(costLedgerMapper.selectList(any(Wrapper.class))).thenReturn(
-                List.of(), List.of(), List.of());
-        when(saleMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sale("999.99", "333.33")));
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("999.99", "333.33"));
 
         var vo = service.report("2026-10");
 
         // (999.99 - 333.33) / 999.99 × 100 = 66.6667 → 66.67
         assertEquals(0, new BigDecimal("66.67").compareTo(vo.getGrossMargin()));
+    }
+
+    @Test
+    void report_sumsReturnsOnceAndRoundsOnlyAfterNetCalculations() {
+        Date from = monthStart(2026, 12);
+        Date to = monthStart(2027, 1);
+        when(dashboardAggregateMapper.costLedgerSum(TENANT_ID, "PRODUCTION_MATERIAL", from, to))
+            .thenReturn(aggregate("500.005", null));
+        when(dashboardAggregateMapper.costLedgerSum(TENANT_ID, "OTHER_OUT", from, to))
+            .thenReturn(aggregate("3.333", null));
+        when(dashboardAggregateMapper.costLedgerSum(TENANT_ID, "OTHER_EXPENSE", from, to))
+            .thenReturn(aggregate("1.112", null));
+        when(dashboardAggregateMapper.salesCostSummary(TENANT_ID, from, to))
+            .thenReturn(aggregate("100.001", "60.004"));
+        when(dashboardAggregateMapper.salesReturnCostSummary(TENANT_ID, from, to))
+            .thenReturn(aggregate("20.005", "10.005"));
+        when(saleItemMapper.countMissingCostBySaleWindow(TENANT_ID, from, to)).thenReturn(4L);
+        when(inventoryService.totalStockAmount()).thenReturn(new BigDecimal("280.0123"));
+
+        // 旧四参构造也走聚合，不得访问退货明细 Mapper。
+        var vo = new FinCostReportServiceImpl(dashboardAggregateMapper, saleReturnMapper, saleItemMapper, inventoryService)
+            .report("2026-12");
+
+        assertEquals(new BigDecimal("20.01"), vo.getSaleReturnAmount());
+        assertEquals(new BigDecimal("10.01"), vo.getSaleReturnCostAmount());
+        assertEquals(new BigDecimal("80.00"), vo.getSalesAmount()); // 原精度净额 79.996
+        assertEquals(new BigDecimal("60.00"), vo.getSalesCost()); // 仍展示回冲前销售成本
+        assertEquals(new BigDecimal("500.01"), vo.getProductionMaterialCost());
+        assertEquals(new BigDecimal("3.33"), vo.getOtherOutCost());
+        assertEquals(new BigDecimal("1.11"), vo.getOtherExpenseCost());
+        assertEquals(new BigDecimal("54.44"), vo.getTotalCost()); // 原精度综合成本 54.444
+        assertEquals(new BigDecimal("25.55"), vo.getGrossProfit()); // 不等于两项展示值相减的 25.56
+        assertEquals(new BigDecimal("31.94"), vo.getGrossMargin());
+        assertEquals(new BigDecimal("280.0123"), vo.getStockAmount());
+        assertEquals(4, vo.getCostMissingCount().intValue());
+
+        verify(dashboardAggregateMapper).salesReturnCostSummary(TENANT_ID, from, to);
+        verify(dashboardAggregateMapper).salesCostSummary(TENANT_ID, from, to);
+        verify(dashboardAggregateMapper).costLedgerSum(TENANT_ID, "PRODUCTION_MATERIAL", from, to);
+        verify(dashboardAggregateMapper).costLedgerSum(TENANT_ID, "OTHER_OUT", from, to);
+        verify(dashboardAggregateMapper).costLedgerSum(TENANT_ID, "OTHER_EXPENSE", from, to);
+        verify(saleItemMapper).countMissingCostBySaleWindow(TENANT_ID, from, to);
+        verify(inventoryService).totalStockAmount();
+        verifyNoMoreInteractions(dashboardAggregateMapper, saleItemMapper, inventoryService);
+        verifyNoInteractions(saleReturnMapper);
+    }
+
+    @Test
+    void report_preservesNegativeReturnSums() {
+        when(dashboardAggregateMapper.salesCostSummary(any(), any(), any())).thenReturn(aggregate("100", "60"));
+        when(dashboardAggregateMapper.salesReturnCostSummary(any(), any(), any()))
+            .thenReturn(aggregate("-20.005", "-10.005"));
+
+        var vo = service.report("2026-10");
+
+        assertEquals(new BigDecimal("-20.01"), vo.getSaleReturnAmount());
+        assertEquals(new BigDecimal("-10.01"), vo.getSaleReturnCostAmount());
+        assertEquals(new BigDecimal("120.01"), vo.getSalesAmount());
+        assertEquals(new BigDecimal("70.01"), vo.getTotalCost());
+        assertEquals(new BigDecimal("50.00"), vo.getGrossProfit());
+        assertEquals(new BigDecimal("41.66"), vo.getGrossMargin());
+    }
+
+    @Test
+    void report_nullReturnAmountIsZeroWithoutDiscardingReturnCost() {
+        when(dashboardAggregateMapper.salesReturnCostSummary(any(), any(), any())).thenReturn(aggregate(null, "7.25"));
+
+        var vo = service.report("2026-10");
+
+        assertEquals(new BigDecimal("0.00"), vo.getSaleReturnAmount());
+        assertEquals(new BigDecimal("7.25"), vo.getSaleReturnCostAmount());
+        assertEquals(new BigDecimal("0.00"), vo.getSalesAmount());
+        assertEquals(new BigDecimal("-7.25"), vo.getTotalCost());
+        assertEquals(new BigDecimal("7.25"), vo.getGrossProfit());
+        assertNull(vo.getGrossMargin());
+    }
+
+    @Test
+    void report_nullReturnCostIsZeroAndNegativeNetSalesHasNoMargin() {
+        when(dashboardAggregateMapper.salesReturnCostSummary(any(), any(), any())).thenReturn(aggregate("12.50", null));
+
+        var vo = service.report("2026-10");
+
+        assertEquals(new BigDecimal("12.50"), vo.getSaleReturnAmount());
+        assertEquals(new BigDecimal("0.00"), vo.getSaleReturnCostAmount());
+        assertEquals(new BigDecimal("-12.50"), vo.getSalesAmount());
+        assertEquals(new BigDecimal("0.00"), vo.getTotalCost());
+        assertEquals(new BigDecimal("-12.50"), vo.getGrossProfit());
+        assertNull(vo.getGrossMargin());
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = "  ")
+    void report_missingTenantIsRejectedBeforeAnyQuery(String tenantId) {
+        tenantMock.when(TenantHelper::getTenantId).thenReturn(tenantId);
+
+        ServiceException error = assertThrows(ServiceException.class, () -> service.report("2026-10"));
+
+        assertEquals(40901, error.getCode());
+        verifyNoInteractions(dashboardAggregateMapper, saleItemMapper, inventoryService);
     }
 
     @Test
@@ -205,18 +311,22 @@ class FinCostReportServiceImplTest {
 
     // ---------- 辅助 ----------
 
-    private FinCostLedger ledger(String amount) {
-        FinCostLedger row = new FinCostLedger();
-        row.setAmount(new BigDecimal(amount));
+    private static Date monthStart(int year, int month) {
+        return Date.from(LocalDate.of(year, month, 1).atStartOfDay(ZoneId.systemDefault()).toInstant());
+    }
+
+    private DashboardAggregateVo aggregate(String amount, String cost) {
+        DashboardAggregateVo row = new DashboardAggregateVo();
+        if (amount != null) {
+            row.setAmount(new BigDecimal(amount));
+        }
+        if (cost != null) {
+            row.setCost(new BigDecimal(cost));
+        }
         return row;
     }
 
-    private ErpSale sale(String totalAmount, String costAmount) {
-        ErpSale s = new ErpSale();
-        s.setTotalAmount(new BigDecimal(totalAmount));
-        if (costAmount != null) {
-            s.setCostAmount(new BigDecimal(costAmount));
-        }
-        return s;
+    private DashboardAggregateVo emptyAggregate() {
+        return new DashboardAggregateVo();
     }
 }

@@ -1,9 +1,7 @@
 package org.erp.trade.service.impl;
 
 import lombok.RequiredArgsConstructor;
-import org.dromara.common.core.constant.TenantConstants;
 import org.dromara.common.core.exception.ServiceException;
-import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.erp.trade.service.IErpOrderProgressService;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -17,6 +15,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 订单执行进度服务实现。
@@ -123,8 +122,12 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
         }
         OrderTables t = tables(orderType);
         String tenantId = currentTenantId();
-        // 先锁订单头再锁订单行：结尾要 UPDATE 订单头，顺序反了会与订单改单成环（§6.8.1 规则 1）
-        lockOrder(orderType, orderId);
+        // 先锁订单头再锁订单行：结尾要 UPDATE 订单头，顺序反了会与订单改单成环（§6.8.1 规则 1）。
+        OrderHead head = lockHead(t, orderId, tenantId);
+        if (head == null) {
+            throw new ServiceException("订单不存在或已删除", 40905);
+        }
+        selectItems(t, orderId, tenantId, true);
         Map<Long, BigDecimal> executed = sumExecuted(t, tenantId, orderId, excludeBillId);
         Map<Long, BigDecimal> returned = sumReturned(t, tenantId, orderId);
         List<OrderItemRow> items = selectItems(t, orderId, tenantId, false);
@@ -136,11 +139,15 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
         for (OrderItemRow item : items) {
             BigDecimal net = executed.getOrDefault(item.id(), BigDecimal.ZERO)
                 .subtract(returned.getOrDefault(item.id(), BigDecimal.ZERO)).max(BigDecimal.ZERO);
-            // 关闭量在关闭那一刻冻结，重算只做下界保护，不再按 qty − executed 推导（D7）
+            // 关闭量在关闭那一刻冻结，重算只做下界保护，不再按 qty − executed 推导（D7）。
             BigDecimal closed = item.closedFlag() == 1
                 ? item.closedQty().min(item.qty().subtract(net).max(BigDecimal.ZERO)) : BigDecimal.ZERO;
-            jdbcTemplate.update("update " + t.item() + " set executed_qty = ?, closed_qty = ? where id = ? and tenant_id = ?",
-                net, closed, item.id(), tenantId);
+            // recalc 可能因确认/撤回/订单改单重复调用；不变行不发 UPDATE，减少锁持有和 binlog 噪声。
+            if (item.executedQty().compareTo(net) != 0 || item.closedQty().compareTo(closed) != 0) {
+                jdbcTemplate.update("update " + t.item()
+                        + " set executed_qty = ?, closed_qty = ? where id = ? and tenant_id = ? and del_flag = '0'",
+                    net, closed, item.id(), tenantId);
+            }
             sumExecuted = sumExecuted.add(net);
             sumClosed = sumClosed.add(closed);
             earliestAll = earlier(earliestAll, item.dueDate());
@@ -150,9 +157,14 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
             }
         }
         String execStatus = items.isEmpty() ? "NOT_STARTED" : execStatusOf(hasRemain, sumExecuted, sumClosed);
-        // 全部交完/关闭时保留全部行的最早交期，不置空（§5.5.1 的「置空」表述已被 §6.1.3 与 DDL 覆盖）
-        jdbcTemplate.update("update " + t.head() + " set due_date = ?, exec_status = ? where id = ? and tenant_id = ?",
-            earliestRemain != null ? earliestRemain : earliestAll, execStatus, orderId, tenantId);
+        Date targetDue = earliestRemain != null ? earliestRemain : earliestAll;
+        // 全部交完/关闭时保留全部行的最早交期，不置空（§5.5.1 的「置空」表述已被 §6.1.3 与 DDL 覆盖）。
+        // 头表同样只在派生值变化时覆盖，避免无意义写锁；不改变业务状态语义。
+        if (!sameDate(head.dueDate(), targetDue) || !Objects.equals(head.execStatus(), execStatus)) {
+            jdbcTemplate.update("update " + t.head()
+                    + " set due_date = ?, exec_status = ? where id = ? and tenant_id = ? and del_flag = '0'",
+                targetDue, execStatus, orderId, tenantId);
+        }
     }
 
     /**
@@ -165,15 +177,20 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
      * @return 订单行ID → 已执行数量
      */
     private Map<Long, BigDecimal> sumExecuted(OrderTables t, String tenantId, Long orderId, Long excludeBillId) {
-        String sql = "select i.source_order_item_id as item_id, sum(i.qty) as total"
-            + " from " + t.execItem() + " i join " + t.execHead() + " h on h.id = i.order_id"
-            + " where h.source_order_id = ? and h.tenant_id = ? and h.status = 'CONFIRMED'"
-            + " and h.del_flag = '0' and i.del_flag = '0' and i.source_order_item_id is not null"
+        String sql = "select oi.id as item_id, sum(i.qty) as total"
+            + " from " + t.execItem() + " i join " + t.execHead()
+            + " h on h.id = i.order_id and h.tenant_id = i.tenant_id"
+            + " join " + t.head() + " oh on oh.id = h.source_order_id and oh.tenant_id = h.tenant_id"
+            + " join " + t.item() + " oi on oi.id = i.source_order_item_id and oi.order_id = oh.id"
+            + " and oi.tenant_id = oh.tenant_id"
+            + " where oh.id = ? and oh.tenant_id = ? and h.tenant_id = ? and i.tenant_id = ? and oi.tenant_id = ?"
+            + " and h.status = 'CONFIRMED' and oh.del_flag = '0' and h.del_flag = '0'"
+            + " and i.del_flag = '0' and oi.del_flag = '0' and i.source_order_item_id is not null"
             + (excludeBillId == null ? "" : " and h.id <> ?")
-            + " group by i.source_order_item_id";
+            + " group by oi.id";
         return excludeBillId == null
-            ? queryGrouped(sql, orderId, tenantId)
-            : queryGrouped(sql, orderId, tenantId, excludeBillId);
+            ? queryGrouped(sql, orderId, tenantId, tenantId, tenantId, tenantId)
+            : queryGrouped(sql, orderId, tenantId, tenantId, tenantId, tenantId, excludeBillId);
     }
 
     /**
@@ -185,15 +202,22 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
      * @return 订单行ID → 已退货数量
      */
     private Map<Long, BigDecimal> sumReturned(OrderTables t, String tenantId, Long orderId) {
-        String sql = "select i.source_order_item_id as item_id, sum(r.qty) as total"
+        String sql = "select oi.id as item_id, sum(r.qty) as total"
             + " from " + t.returnItem() + " r"
-            + " join " + t.returnHead() + " rh on rh.id = r.order_id"
-            + " join " + t.execItem() + " i on i.id = r." + t.returnExecItemFk()
-            + " join " + t.execHead() + " h on h.id = i.order_id"
-            + " where h.source_order_id = ? and h.tenant_id = ? and rh.status = 'CONFIRMED' and rh.tenant_id = ?"
-            + " and rh.del_flag = '0' and r.del_flag = '0' and i.del_flag = '0' and i.source_order_item_id is not null"
-            + " group by i.source_order_item_id";
-        return queryGrouped(sql, orderId, tenantId, tenantId);
+            + " join " + t.returnHead() + " rh on rh.id = r.order_id and rh.tenant_id = r.tenant_id"
+            + " join " + t.execItem() + " i on i.id = r." + t.returnExecItemFk() + " and i.tenant_id = r.tenant_id"
+            + " join " + t.execHead() + " h on h.id = i.order_id and h.tenant_id = i.tenant_id"
+            + " join " + t.head() + " oh on oh.id = h.source_order_id and oh.tenant_id = h.tenant_id"
+            + " join " + t.item() + " oi on oi.id = i.source_order_item_id and oi.order_id = oh.id"
+            + " and oi.tenant_id = oh.tenant_id"
+            + " where oh.id = ? and oh.tenant_id = ? and h.tenant_id = ? and i.tenant_id = ?"
+            + " and rh.tenant_id = ? and r.tenant_id = ? and oi.tenant_id = ?"
+            + " and h.status = 'CONFIRMED' and rh.status = 'CONFIRMED'"
+            + " and oh.del_flag = '0' and h.del_flag = '0' and i.del_flag = '0'"
+            + " and rh.del_flag = '0' and r.del_flag = '0' and oi.del_flag = '0'"
+            + " and i.source_order_item_id is not null"
+            + " group by oi.id";
+        return queryGrouped(sql, orderId, tenantId, tenantId, tenantId, tenantId, tenantId, tenantId);
     }
 
     /**
@@ -221,9 +245,10 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
      */
     private OrderHead lockHead(OrderTables t, Long orderId, String tenantId) {
         List<OrderHead> rows = jdbcTemplate.query(
-            "select status, over_tol_pct from " + t.head()
+            "select status, over_tol_pct, due_date, exec_status from " + t.head()
                 + " where id = ? and tenant_id = ? and del_flag = '0' for update",
-            (rs, rowNum) -> new OrderHead(rs.getString("status"), rs.getBigDecimal("over_tol_pct")),
+            (rs, rowNum) -> new OrderHead(rs.getString("status"), rs.getBigDecimal("over_tol_pct"),
+                rs.getDate("due_date"), rs.getString("exec_status")),
             orderId, tenantId);
         return rows.isEmpty() ? null : rows.get(0);
     }
@@ -276,12 +301,16 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
     }
 
     /**
-     * 原生 SQL 不经过多租户插件，租户显式带入；非请求线程兜底默认租户（D17）。
+     * 原生 SQL 不经过多租户插件，租户显式带入；缺少租户上下文直接拒绝，绝不回落默认租户。
      *
      * @return 当前租户编号
      */
     private String currentTenantId() {
-        return StringUtils.blankToDefault(TenantHelper.getTenantId(), TenantConstants.DEFAULT_TENANT_ID);
+        String tenantId = TenantHelper.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ServiceException("缺少租户上下文，拒绝执行订单进度重算", 40901);
+        }
+        return tenantId;
     }
 
     /**
@@ -296,6 +325,10 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
             return current;
         }
         return current == null || candidate.before(current) ? candidate : current;
+    }
+
+    private boolean sameDate(Date left, Date right) {
+        return left == null ? right == null : left.equals(right);
     }
 
     /**
@@ -328,7 +361,7 @@ public class ErpOrderProgressServiceImpl implements IErpOrderProgressService {
     /**
      * 订单头锁定行。
      */
-    private record OrderHead(String status, BigDecimal overTolPct) {
+    private record OrderHead(String status, BigDecimal overTolPct, Date dueDate, String execStatus) {
     }
 
     /**

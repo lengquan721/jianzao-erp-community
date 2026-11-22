@@ -124,10 +124,9 @@ export default {
    * @param content 提示文案
    * @returns 用户输入值的 Promise
    */
-  prompt(content: any) {
-    return new Promise((resolve, reject) => {
+  prompt(content: any): Promise<{ value: string }> {
+    return new Promise<{ value: string }>((resolve, reject) => {
       let inputValue = '';
-      let ins: DialogInstance;
       // 用 t-input 的 TNode 承接输入值，确定时回传
       const body: TNode = (h) =>
         h('div', null, [
@@ -141,7 +140,7 @@ export default {
             }
           })
         ]);
-      ins = DialogPlugin.confirm({
+      const ins = DialogPlugin.confirm({
         attach: 'body',
         header: '系统提示',
         body,

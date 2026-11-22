@@ -1,6 +1,7 @@
 package org.erp.trade.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
@@ -182,7 +183,8 @@ public class ErpOtherOutServiceImpl implements IErpOtherOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void confirm(Long id) {
-        ErpOtherOut head = otherOutMapper.selectById(id);
+        // 行锁：确认/撤回/作废的第一把锁必须是单据头，与销售单加锁顺序一致
+        ErpOtherOut head = otherOutMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他出库单不存在");
         }
@@ -199,21 +201,30 @@ public class ErpOtherOutServiceImpl implements IErpOtherOutService {
         BigDecimal costTotal = BigDecimal.ZERO;
         int seq = 0;
         for (ErpOtherOutItem row : items) {
-            BigDecimal unitCost = inventoryService.snapshotCost(row.getProductId());
-            BigDecimal amount = row.getQty().multiply(unitCost).setScale(2, RoundingMode.HALF_UP);
-            inventoryService.outbound("OTHER_OUT", head.getNo(), head.getId(),
+            BigDecimal unitCost = inventoryService.outbound("OTHER_OUT", head.getNo(), head.getId(),
                 row.getProductId(), warehouseService.defaultWarehouseId(), row.getQty(),
                 "NONE", null, head.getBizDate(), seq++);
+            BigDecimal amount = row.getQty().multiply(unitCost).setScale(2, RoundingMode.HALF_UP);
             row.setUnitCost(unitCost);
             row.setAmount(amount);
             itemMapper.updateById(row);
             costTotal = costTotal.add(amount);
         }
         head.setCostAmount(costTotal.setScale(2, RoundingMode.HALF_UP));
-        head.setStatus("CONFIRMED");
+        // 状态 CAS：只有 DRAFT 能改成 CONFIRMED，并发双击/跨节点时第二个请求返回 40902
         head.setConfirmedAt(new Date());
         head.setConfirmedBy(currentUserId());
-        otherOutMapper.updateById(head);
+        int rows = otherOutMapper.update(null, new UpdateWrapper<ErpOtherOut>()
+            .eq("id", head.getId()).eq("status", "DRAFT")
+            .set("status", "CONFIRMED")
+            .set("cost_amount", head.getCostAmount())
+            .set("confirmed_at", head.getConfirmedAt())
+            .set("confirmed_by", head.getConfirmedBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        // 内存实体同步 CAS 结果，后续按 head 写台账时状态不落后
+        head.setStatus("CONFIRMED");
 
         // 成本台账：OTHER_OUT（R20 综合成本口径）
         costLedgerService.record("OTHER_OUT", "OTHER_OUT", head.getId(), head.getNo(),
@@ -223,7 +234,7 @@ public class ErpOtherOutServiceImpl implements IErpOtherOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void withdraw(Long id) {
-        ErpOtherOut head = otherOutMapper.selectById(id);
+        ErpOtherOut head = otherOutMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他出库单不存在");
         }
@@ -233,17 +244,27 @@ public class ErpOtherOutServiceImpl implements IErpOtherOutService {
         // P0-2：按单据整体冲销，同商品多行也只冲一次（DOC/31 §13.4）
         inventoryService.reverseByBill(head.getNo(), head.getId(), head.getBizDate());
         costLedgerService.reverseBySource("OTHER_OUT", id);
-        head.setStatus("DRAFT");
-        head.setCostAmount(BigDecimal.ZERO);
+        // 状态 CAS：只有 CONFIRMED 能改回 DRAFT，并发撤回时第二个请求返回 40902
         head.setWithdrawnAt(new Date());
         head.setWithdrawnBy(currentUserId());
-        otherOutMapper.updateById(head);
+        int rows = otherOutMapper.update(null, new UpdateWrapper<ErpOtherOut>()
+            .eq("id", head.getId()).eq("status", "CONFIRMED")
+            .set("status", "DRAFT")
+            .set("cost_amount", BigDecimal.ZERO)
+            .set("withdrawn_at", head.getWithdrawnAt())
+            .set("withdrawn_by", head.getWithdrawnBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        head.setStatus("DRAFT");
+        head.setCostAmount(BigDecimal.ZERO);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void voidBill(Long id) {
-        ErpOtherOut head = otherOutMapper.selectById(id);
+        // 行锁：作废与撤回/确认共用单据头锁，避免并发路径交错
+        ErpOtherOut head = otherOutMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他出库单不存在");
         }
@@ -258,10 +279,18 @@ public class ErpOtherOutServiceImpl implements IErpOtherOutService {
             withdraw(id);
         }
         head = otherOutMapper.selectById(id);
-        head.setStatus("VOID");
         head.setVoidedAt(new Date());
         head.setVoidedBy(currentUserId());
-        otherOutMapper.updateById(head);
+        // 状态 CAS：只有 DRAFT 能改成 VOID（撤回后必定落在 DRAFT）
+        int rows = otherOutMapper.update(null, new UpdateWrapper<ErpOtherOut>()
+            .eq("id", head.getId()).eq("status", "DRAFT")
+            .set("status", "VOID")
+            .set("voided_at", head.getVoidedAt())
+            .set("voided_by", head.getVoidedBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        head.setStatus("VOID");
     }
 
     private Long currentUserId() {

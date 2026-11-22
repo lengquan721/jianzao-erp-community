@@ -192,25 +192,39 @@ public class TenantHelper {
      * @param handle 处理执行方法
      */
     public static void dynamic(String tenantId, Runnable handle) {
+        if (StringUtils.isBlank(tenantId)) {
+            throw new IllegalArgumentException("后台执行租户任务必须显式指定租户 ID");
+        }
+        String previous = TEMP_DYNAMIC_TENANT.get();
         setDynamic(tenantId);
         try {
             handle.run();
         } finally {
-            clearDynamic();
+            restoreDynamic(previous);
         }
     }
 
     /**
-     * 在动态租户中执行
-     *
-     * @param handle 处理执行方法
+     * 在显式动态租户中执行；支持嵌套调用并在 finally 中恢复上一层上下文。
      */
     public static <T> T dynamic(String tenantId, Supplier<T> handle) {
+        if (StringUtils.isBlank(tenantId)) {
+            throw new IllegalArgumentException("后台执行租户任务必须显式指定租户 ID");
+        }
+        String previous = TEMP_DYNAMIC_TENANT.get();
         setDynamic(tenantId);
         try {
             return handle.get();
         } finally {
-            clearDynamic();
+            restoreDynamic(previous);
+        }
+    }
+
+    private static void restoreDynamic(String previous) {
+        if (previous == null) {
+            TEMP_DYNAMIC_TENANT.remove();
+        } else {
+            TEMP_DYNAMIC_TENANT.set(previous);
         }
     }
 

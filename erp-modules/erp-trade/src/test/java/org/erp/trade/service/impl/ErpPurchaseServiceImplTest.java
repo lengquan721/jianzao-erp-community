@@ -5,6 +5,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.erp.common.sequence.SequenceService;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.master.domain.ErpProduct;
 import org.erp.master.domain.ErpSupplier;
 import org.erp.master.mapper.ErpProductMapper;
@@ -18,11 +19,15 @@ import org.erp.trade.domain.bo.ErpPurchaseBo;
 import org.erp.trade.domain.vo.ErpPurchaseVo;
 import org.erp.trade.mapper.ErpPurchaseItemMapper;
 import org.erp.trade.mapper.ErpPurchaseMapper;
+import org.erp.trade.service.IErpOrderProgressService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -34,13 +39,18 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -55,6 +65,7 @@ import static org.mockito.Mockito.when;
 class ErpPurchaseServiceImplTest {
 
     private static final Date BIZ_DATE = new Date(0);
+    private static final Date CUTOFF_DATE = java.sql.Date.valueOf("2026-01-01");
 
     @Mock
     private ErpPurchaseMapper purchaseMapper;
@@ -82,7 +93,9 @@ class ErpPurchaseServiceImplTest {
     @Mock
     private IFinArApService finArApService;
     @Mock
-    private org.erp.trade.service.IErpOrderProgressService orderProgressService;
+    private IErpOrderProgressService orderProgressService;
+    @Mock
+    private IFinOpeningGuardService openingGuardService;
 
     private ErpPurchaseServiceImpl service;
 
@@ -90,7 +103,7 @@ class ErpPurchaseServiceImplTest {
     void setUp() {
         service = new ErpPurchaseServiceImpl(purchaseMapper, purchaseReturnMapper, itemMapper, purchaseOrderMapper,
             purchaseOrderItemMapper, productMapper, supplierMapper, inventoryService, productService, warehouseService,
-            sequenceService, finArApService, orderProgressService);
+            sequenceService, finArApService, orderProgressService, openingGuardService);
         lenient().when(warehouseService.defaultWarehouseId()).thenReturn(1L);
         lenient().when(sequenceService.nextNo(any())).thenReturn("CG202601010001");
         lenient().when(supplierMapper.selectByIds(any())).thenReturn(List.of());
@@ -173,6 +186,7 @@ class ErpPurchaseServiceImplTest {
         assertEquals("BY_QTY", head.getFreightAllocMethod());
         assertEquals(0, new BigDecimal("2800.00").compareTo(head.getGoodsAmount()));
         assertEquals(0, new BigDecimal("2800.00").compareTo(head.getTotalAmount()));
+        verifyNoInteractions(openingGuardService);
     }
 
     @Test
@@ -243,8 +257,8 @@ class ErpPurchaseServiceImplTest {
 
     @Test
     void 预览按数量分摊且不落库() {
-        when(productMapper.selectById(1L)).thenReturn(product(1L, "YL001", "钢管"));
-        when(productMapper.selectById(2L)).thenReturn(product(2L, "YL002", "角钢"));
+        when(productMapper.selectByIds(any())).thenReturn(List.of(
+            product(1L, "YL001", "钢管"), product(2L, "YL002", "角钢")));
 
         var result = service.previewAllocation(
             bo("VAT_INVOICE", new BigDecimal("13"), new BigDecimal("100"), item(1L, "100", "28"), item(2L, "300", "12")));
@@ -259,8 +273,34 @@ class ErpPurchaseServiceImplTest {
     }
 
     @Test
+    void 预览对重复产品ID仅做一次去重批量查询() {
+        when(productMapper.selectByIds(any())).thenReturn(List.of(product(1L, "YL001", "钢管"),
+            product(2L, "YL002", "角钢")));
+
+        var result = service.previewAllocation(bo("NO_TAX", BigDecimal.ZERO, BigDecimal.ZERO,
+            item(1L, "1", "10"), item(2L, "2", "20"), item(1L, "3", "30")));
+
+        assertEquals(3, result.size());
+        ArgumentCaptor<java.util.Collection<Long>> ids = ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(productMapper).selectByIds(ids.capture());
+        assertEquals(List.of(1L, 2L), List.copyOf(ids.getValue()));
+        verify(productMapper, never()).selectById(any());
+    }
+
+    @Test
+    void 预览空批次不发产品查询且缺失产品仍拒绝() {
+        var empty = service.previewAllocation(bo("NO_TAX", BigDecimal.ZERO, BigDecimal.ZERO));
+        assertTrue(empty.isEmpty());
+        verify(productMapper, never()).selectByIds(any());
+
+        ErpPurchaseBo missing = bo("NO_TAX", BigDecimal.ZERO, BigDecimal.ZERO, item(99L, "1", "10"));
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.previewAllocation(missing));
+        assertEquals("产品不存在：99", ex.getMessage());
+    }
+
+    @Test
     void 预览数量为0时拒绝() {
-        when(productMapper.selectById(1L)).thenReturn(product(1L, "YL001", "钢管"));
+        when(productMapper.selectByIds(any())).thenReturn(List.of(product(1L, "YL001", "钢管")));
 
         ServiceException ex = assertThrows(ServiceException.class,
             () -> service.previewAllocation(bo(null, null, new BigDecimal("100"), item(1L, "0", "28"))));
@@ -279,6 +319,71 @@ class ErpPurchaseServiceImplTest {
         assertEquals("BY_QTY", result.getFreightAllocMethod());
         assertEquals(0, new BigDecimal("20.00").compareTo(result.getGoodsAmount()));
         assertEquals(0, new BigDecimal("70.00").compareTo(result.getTotalAmount()));
+        verifyNoInteractions(openingGuardService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "insert", "update"})
+    void openingCutoffStopsPurchaseConfirmationBeforeStockOrderAndFinanceWrites(String entry) {
+        ErpPurchase persisted = new ErpPurchase();
+        persisted.setId(1L);
+        persisted.setSupplierId(10L);
+        persisted.setBizDate(CUTOFF_DATE);
+        persisted.setStatus("DRAFT");
+        when(purchaseMapper.lockById(1L)).thenReturn(persisted);
+        ErpPurchaseItem row = new ErpPurchaseItem();
+        row.setProductId(1L);
+        row.setQty(BigDecimal.ONE);
+        row.setCostPrice(BigDecimal.TEN);
+        when(itemMapper.selectList(any())).thenReturn(List.of(row));
+        when(productMapper.selectById(1L)).thenReturn(product(1L, "YL001", "钢管"));
+        ErpPurchaseBo request = bo("NO_TAX", BigDecimal.ZERO, BigDecimal.ZERO, item(1L, "1", "10"));
+        request.setConfirm(true);
+        // 模拟 DATE 列去除时分秒；确认必须取锁定后的表头，不直接用 BO。
+        request.setBizDate(new Date(CUTOFF_DATE.getTime() + 1_000));
+        ServiceException denial = new ServiceException("请先撤回期初", 40902);
+        doThrow(denial).when(openingGuardService).lockAndCheckBusinessDate("AP", 10L, CUTOFF_DATE);
+
+        assertSame(denial, assertThrows(ServiceException.class, () -> {
+            switch (entry) {
+                case "confirm" -> service.confirm(1L);
+                case "insert" -> service.insert(request);
+                case "update" -> service.update(1L, request);
+                default -> throw new AssertionError(entry);
+            }
+        }));
+
+        verify(openingGuardService).lockAndCheckBusinessDate("AP", 10L, CUTOFF_DATE);
+        verifyNoInteractions(inventoryService, productService, finArApService);
+        verify(orderProgressService, never()).recalc(any(), any(), any());
+        verify(purchaseMapper, never()).update(isNull(), any());
+    }
+
+    @Test
+    void purchaseChecksOpeningAfterOrderLocksAndContinuesWhenAllowed() {
+        ErpPurchase head = purchaseMapper.selectById(1L);
+        head.setBizDate(java.sql.Date.valueOf("2026-01-02"));
+        head.setSourceOrderId(20L);
+        head.setTotalAmount(BigDecimal.TEN);
+        ErpPurchaseItem row = new ErpPurchaseItem();
+        row.setSourceOrderItemId(100L);
+        row.setProductId(1L);
+        row.setQty(BigDecimal.ONE);
+        row.setCostPrice(BigDecimal.TEN);
+        when(itemMapper.selectList(any())).thenReturn(List.of(row));
+
+        service.confirm(1L);
+
+        InOrder order = inOrder(purchaseMapper, orderProgressService, openingGuardService, inventoryService, finArApService);
+        order.verify(purchaseMapper, atLeastOnce()).lockById(1L);
+        order.verify(orderProgressService).lockAndValidate(IErpOrderProgressService.TYPE_PURCHASE, 20L,
+            List.of(new IErpOrderProgressService.ExecLine(100L, BigDecimal.ONE)));
+        order.verify(openingGuardService).lockAndCheckBusinessDate("AP", 10L, head.getBizDate());
+        order.verify(inventoryService).lockStockRows(List.of(1L));
+        order.verify(inventoryService).inbound("PURCHASE", head.getNo(), 1L, 1L, 1L,
+            BigDecimal.ONE, BigDecimal.TEN, "SUPPLIER", 10L, head.getBizDate(), 0);
+        order.verify(orderProgressService).recalc(IErpOrderProgressService.TYPE_PURCHASE, 20L, null);
+        order.verify(finArApService).createByPurchase(1L, head.getNo(), 10L, BigDecimal.TEN, head.getBizDate());
     }
 
     // ---------- 往来单位名称下沉（B3） ----------

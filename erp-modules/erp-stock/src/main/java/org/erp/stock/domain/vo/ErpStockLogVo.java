@@ -1,9 +1,10 @@
 package org.erp.stock.domain.vo;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.math.BigDecimal;
-import java.util.Date;
+import java.time.LocalDate;
 
 /**
  * 库存流水视图对象
@@ -40,7 +41,8 @@ public class ErpStockLogVo {
 
     private BigDecimal balanceAfter;
 
-    private Date bizDate;
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate bizDate;
 
     private Integer seq;
 }

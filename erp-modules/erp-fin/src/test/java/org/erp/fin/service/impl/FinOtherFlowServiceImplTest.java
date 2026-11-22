@@ -67,7 +67,8 @@ class FinOtherFlowServiceImplTest {
             inv.getArgument(0, FinOtherFlow.class).setId(100L);
             return 1;
         });
-        when(flowMapper.updateById(any(FinOtherFlow.class))).thenReturn(1);
+        when(flowMapper.update(any(FinOtherFlow.class), any(Wrapper.class))).thenReturn(1);
+        when(flowMapper.delete(any(Wrapper.class))).thenReturn(1);
         when(flowMapper.selectById(100L)).thenAnswer(inv -> draftHead());
         when(sequenceService.nextNo("SR")).thenReturn("SR202610310001");
         when(sequenceService.nextNo("ZC")).thenReturn("ZC202610310001");
@@ -88,7 +89,7 @@ class FinOtherFlowServiceImplTest {
     @Test
     void insert_expenseWithAffectCost_recordsLedger() {
         FinOtherFlow flow = draftHead();
-        when(flowMapper.selectById(100L)).thenReturn(flow);
+        when(flowMapper.lockById(100L)).thenReturn(flow);
 
         service.confirm(100L);
 
@@ -101,7 +102,7 @@ class FinOtherFlowServiceImplTest {
     void insert_expenseWithoutAffectCost_noLedger() {
         FinOtherFlow flow = draftHead();
         flow.setAffectCost(0);
-        when(flowMapper.selectById(100L)).thenReturn(flow);
+        when(flowMapper.lockById(100L)).thenReturn(flow);
 
         service.confirm(100L);
 
@@ -124,7 +125,7 @@ class FinOtherFlowServiceImplTest {
     void withdraw_confirmedExpense_reversesLedger() {
         FinOtherFlow head = draftHead();
         head.setStatus("CONFIRMED");
-        when(flowMapper.selectById(100L)).thenReturn(head);
+        when(flowMapper.lockById(100L)).thenReturn(head);
 
         service.withdraw(100L);
 
@@ -134,7 +135,7 @@ class FinOtherFlowServiceImplTest {
 
     @Test
     void withdraw_draftRejected40902() {
-        when(flowMapper.selectById(100L)).thenReturn(draftHead());
+        when(flowMapper.lockById(100L)).thenReturn(draftHead());
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.withdraw(100L));
         assertEquals(40902, ex.getCode());
@@ -145,7 +146,7 @@ class FinOtherFlowServiceImplTest {
     void update_confirmedRejected40902() {
         FinOtherFlow head = draftHead();
         head.setStatus("CONFIRMED");
-        when(flowMapper.selectById(100L)).thenReturn(head);
+        when(flowMapper.lockById(100L)).thenReturn(head);
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.update(100L, bo("EXPENSE", "300", false, 0)));
@@ -163,36 +164,36 @@ class FinOtherFlowServiceImplTest {
     void voidConfirmed_withdrawsFirstThenVoids() {
         FinOtherFlow head = draftHead();
         head.setStatus("CONFIRMED");
-        when(flowMapper.selectById(100L)).thenReturn(head);
+        when(flowMapper.lockById(100L)).thenReturn(head);
 
         service.voidBill(100L);
 
         verify(costLedgerService).reverseBySource("OTHER_FLOW", 100L);
         ArgumentCaptor<FinOtherFlow> captor = ArgumentCaptor.forClass(FinOtherFlow.class);
-        verify(flowMapper, org.mockito.Mockito.atLeastOnce()).updateById(captor.capture());
-        assertEquals("VOID", captor.getValue().getStatus());
+        verify(flowMapper, org.mockito.Mockito.atLeastOnce()).update(any(FinOtherFlow.class), any(Wrapper.class));
+        assertEquals("VOID", head.getStatus());
     }
 
     @Test
     void voidDraft_rejected40902_pointToDelete() {
         // 草稿不再走作废：作废会把草稿固化成终态单据，草稿应改走删除
-        when(flowMapper.selectById(100L)).thenReturn(draftHead());
+        when(flowMapper.lockById(100L)).thenReturn(draftHead());
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(100L));
         assertEquals(40902, ex.getCode());
         assertTrue(ex.getMessage().contains("草稿单据请使用删除"));
-        verify(flowMapper, never()).updateById(any(FinOtherFlow.class));
+        verify(flowMapper, never()).update(any(FinOtherFlow.class), any(Wrapper.class));
     }
 
     // ---------- 草稿删除（逻辑删除） ----------
 
     @Test
     void deleteDraft_draft_deletesHead() {
-        when(flowMapper.selectById(100L)).thenReturn(draftHead());
+        when(flowMapper.lockById(100L)).thenReturn(draftHead());
 
         service.deleteDraft(100L);
 
-        verify(flowMapper).deleteById(100L);
+        verify(flowMapper).delete(any(Wrapper.class));
         // 成本台账只在确认时写入，草稿删除无需冲销
         verify(costLedgerService, never()).reverseBySource(any(), any());
     }
@@ -201,7 +202,7 @@ class FinOtherFlowServiceImplTest {
     void deleteDraft_confirmedRejected40902() {
         FinOtherFlow head = draftHead();
         head.setStatus("CONFIRMED");
-        when(flowMapper.selectById(100L)).thenReturn(head);
+        when(flowMapper.lockById(100L)).thenReturn(head);
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(100L));
         assertEquals(40902, ex.getCode());

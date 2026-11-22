@@ -9,6 +9,8 @@ import org.erp.master.mapper.ErpProductMapper;
 import org.erp.master.mapper.ErpSupplierMapper;
 import org.erp.stock.domain.ErpStock;
 import org.erp.stock.domain.ErpStockLog;
+import org.erp.stock.domain.vo.ErpStockLogVo;
+import org.erp.stock.domain.vo.ErpStockVo;
 import org.erp.stock.mapper.ErpStockLogMapper;
 import org.erp.stock.mapper.ErpStockMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -28,6 +30,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -37,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
@@ -78,9 +82,13 @@ class InventoryServiceImplTest {
             supplierMapper, customerMapper);
         when(stockLogMapper.insert(any(ErpStockLog.class))).thenReturn(1);
         when(stockMapper.insert(any(ErpStock.class))).thenReturn(1);
+        when(stockMapper.addQty(any(), any(), any())).thenReturn(1);
         when(productMapper.selectByIds(any())).thenReturn(List.of());
         when(supplierMapper.selectByIds(any())).thenReturn(List.of());
         when(customerMapper.selectByIds(any())).thenReturn(List.of());
+        when(stockMapper.selectForUpdate(any(), any())).thenReturn(stockRow("50", "10.0000"));
+        when(stockLogMapper.selectBillRowsForUpdate(any(), any(), any())).thenReturn(List.of());
+        when(stockLogMapper.selectReplayRowsForUpdate(any(), any())).thenReturn(List.of());
     }
 
     // ---------- 出库 ----------
@@ -114,11 +122,14 @@ class InventoryServiceImplTest {
     @Test
     void outbound_success_deductsQty_keepsAvgCost_writesLog() {
         stubStockRowExists();
-        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("97", "10.6666"));
+        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("100", "10.6666"));
+        // 模拟 RR 的锁前快照；既不能用于成本，也不能用于扣减后结存。
+        when(stockMapper.selectOne(any())).thenReturn(stockRow("40", "8.3333"));
         when(stockMapper.deductQty(PRODUCT_ID, WAREHOUSE_ID, new BigDecimal("3"))).thenReturn(1);
 
-        service.outbound("SALE", "S0001", 100L, PRODUCT_ID, WAREHOUSE_ID,
+        BigDecimal usedCost = service.outbound("SALE", "S0001", 100L, PRODUCT_ID, WAREHOUSE_ID,
             new BigDecimal("3"), "CUSTOMER", 9L, new Date(0), 1);
+        assertEquals(0, new BigDecimal("10.6666").compareTo(usedCost));
 
         verify(stockMapper).deductQty(PRODUCT_ID, WAREHOUSE_ID, new BigDecimal("3"));
         // 出库不改变均价
@@ -133,6 +144,23 @@ class InventoryServiceImplTest {
         // 金额 = 10.6666 * 3 = 31.9998 → HALF_UP 2 位 = 32.00
         assertEquals(0, new BigDecimal("32.00").compareTo(log.getAmount()));
         assertEquals(0, new BigDecimal("97").compareTo(log.getBalanceAfter()));
+        verify(stockMapper, never()).selectOne(any());
+    }
+
+    @Test
+    void outbound_explicitCostPreservesOriginalCostAndUsesLockedBalance() {
+        stubStockRowExists();
+        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("15", "7.3333"));
+        when(stockMapper.deductQty(PRODUCT_ID, WAREHOUSE_ID, new BigDecimal("3"))).thenReturn(1);
+
+        service.outbound("PURCHASE_RETURN", "PT0001", 300L, PRODUCT_ID, WAREHOUSE_ID,
+            new BigDecimal("3"), new BigDecimal("10"), "SUPPLIER", 8L, new Date(0), 1);
+
+        ArgumentCaptor<ErpStockLog> captor = ArgumentCaptor.forClass(ErpStockLog.class);
+        verify(stockLogMapper).insert(captor.capture());
+        assertEquals(0, new BigDecimal("10").compareTo(captor.getValue().getUnitCost()));
+        assertEquals(0, new BigDecimal("12").compareTo(captor.getValue().getBalanceAfter()));
+        verify(stockMapper, never()).selectOne(any());
     }
 
     // ---------- 入库 ----------
@@ -153,14 +181,14 @@ class InventoryServiceImplTest {
         "0|0|100|10.6666|10.6666",
         "50|10.0000|50|12.0000|11.0000",
         "50|10.6666|10|31.7590|14.1820",
+        "15|7.3333|3|20|9.4444",
         "0|0|10|0|0.0000"
     }, delimiter = '|')
     void inbound_weightedAverage(String oldQty, String oldCost, String inQty, String inCost, String expectedAvg) {
         stubStockRowExists();
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID))
             .thenReturn(stockRow(oldQty, oldCost));
-        when(stockMapper.selectOne(any())).thenReturn(stockRow(oldQty, oldCost));
-        when(stockMapper.deductQty(any(), any(), any())).thenReturn(1);
+        when(stockMapper.selectOne(any())).thenReturn(stockRow("10", "6.0000"));
 
         service.inbound("PURCHASE", "P0001", 200L, PRODUCT_ID, WAREHOUSE_ID,
             new BigDecimal(inQty), new BigDecimal(inCost), "SUPPLIER", 8L, new Date(0), 1);
@@ -175,6 +203,20 @@ class InventoryServiceImplTest {
         assertEquals(0, new BigDecimal(inQty).compareTo(log.getQty()));
         assertEquals(0, new BigDecimal(inCost).compareTo(log.getUnitCost()));
         assertEquals(0, new BigDecimal(inQty).multiply(new BigDecimal(inCost)).compareTo(log.getAmount()));
+        assertEquals(0, new BigDecimal(oldQty).add(new BigDecimal(inQty)).compareTo(log.getBalanceAfter()));
+        verify(stockMapper, never()).selectOne(any());
+    }
+
+    @Test
+    void inbound_withoutLockedRowDoesNotWriteBalanceOrLog() {
+        stubStockRowExists();
+        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(null);
+        var rejected = assertThrows(ServiceException.class, () -> service.inbound(
+            "PURCHASE", "P0001", 200L, PRODUCT_ID, WAREHOUSE_ID, BigDecimal.TEN, BigDecimal.ONE,
+            "SUPPLIER", 8L, new Date(0), 1));
+        assertEquals(40902, rejected.getCode());
+        verify(stockMapper, never()).addQty(any(), any(), any());
+        verify(stockLogMapper, never()).insert(any(ErpStockLog.class));
     }
 
     @Test
@@ -254,12 +296,9 @@ class InventoryServiceImplTest {
         // 撤回不经过精度校验：历史 3 位小数流水在商品改为整数后仍可撤回
         stubProduct(0);
         ErpStockLog origin = purchaseLog(1, "1.234", "10.0000");
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(origin)))
-            .thenReturn(new ArrayList<>())
-            .thenReturn(new ArrayList<>(List.of(origin, voidLog(2, "-1.234", "10.0000"))));
+        stubReverse(List.of(origin), List.of(), List.of(origin, voidLog(2, "-1.234", "10.0000")));
         when(stockMapper.selectCount(any())).thenReturn(1L);
-        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("0", "0"));
+        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("1.234", "10.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("0", "0"));
         when(stockMapper.deductQty(PRODUCT_ID, WAREHOUSE_ID, new BigDecimal("1.234"))).thenReturn(1);
 
@@ -272,7 +311,8 @@ class InventoryServiceImplTest {
 
     @Test
     void reverse_noOriginLog_rejected() {
-        when(stockLogMapper.selectList(any())).thenReturn(new ArrayList<>());
+        when(stockLogMapper.selectBillRowsForUpdate(any(), any(), any())).thenReturn(List.of());
+        when(stockLogMapper.selectBillStockKeys(any())).thenReturn(List.of());
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.reverse("S9999", 300L, PRODUCT_ID, WAREHOUSE_ID, new Date(), 1));
@@ -286,9 +326,7 @@ class InventoryServiceImplTest {
         ErpStockLog origin = purchaseLog(1, "50", "10.0000");
         ErpStockLog voidRow = voidLog(2, "-50", "10.0000");
         voidRow.setPartnerId(1L);
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(origin)))
-            .thenReturn(new ArrayList<>(List.of(voidRow)));
+        stubReverse(List.of(origin), List.of(voidRow), List.of());
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.reverse("P0001", 200L, PRODUCT_ID, WAREHOUSE_ID, new Date(), 1));
@@ -299,15 +337,9 @@ class InventoryServiceImplTest {
     @Test
     void reverse_inbound_deductsQty_writesVoidLog_replaysToZero() {
         ErpStockLog origin = purchaseLog(1, "50", "10.0000");
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(origin)))
-            .thenReturn(new ArrayList<>())
-            .thenReturn(new ArrayList<>(List.of(
-                origin,
-                voidLog(2, "-50", "10.0000")
-            )));
+        stubReverse(List.of(origin), List.of(), List.of(origin, voidLog(2, "-50", "10.0000")));
         when(stockMapper.selectCount(any())).thenReturn(1L);
-        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("0", "0"));
+        when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("50", "10.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("0", "0"));
         when(stockMapper.deductQty(PRODUCT_ID, WAREHOUSE_ID, new BigDecimal("50"))).thenReturn(1);
 
@@ -335,10 +367,7 @@ class InventoryServiceImplTest {
         // 已有 +30@10 入库、-10 销售出库；撤回销售 → 回补 10，重放后 30@10
         ErpStockLog purchase = purchaseLog(1, "30", "10.0000");
         ErpStockLog sale = saleLog(2, "-10", "10.0000");
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(sale)))
-            .thenReturn(new ArrayList<>())
-            .thenReturn(new ArrayList<>(List.of(purchase, sale, voidLog(3, "10", "10.0000"))));
+        stubReverse(List.of(sale), List.of(), List.of(purchase, sale, voidLog(3, "10", "10.0000")));
         when(stockMapper.selectCount(any())).thenReturn(1L);
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("20", "10.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("30", "10.0000"));
@@ -358,14 +387,9 @@ class InventoryServiceImplTest {
         // 回退必须先回补出库再扣回入库，否则先扣入库会误判库存不足（DOC/26 §8.3）
         ErpStockLog quickIn = logRow(1, "QUICK_IN", "XS0001", "100", "8.0000", new Date(0));
         ErpStockLog sale = logRow(2, "SALE", "XS0001", "-100", "8.0000", new Date(0));
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(quickIn, sale)))
-            .thenReturn(new ArrayList<>())
-            .thenReturn(new ArrayList<>(List.of(
-                quickIn, sale,
-                logRow(3, "VOID", "XS0001", "100", "8.0000", new Date(0)),
-                logRow(4, "VOID", "XS0001", "-100", "8.0000", new Date(0))
-            )));
+        stubReverse(List.of(quickIn, sale), List.of(), List.of(quickIn, sale,
+            logRow(3, "VOID", "XS0001", "100", "8.0000", new Date(0)),
+            logRow(4, "VOID", "XS0001", "-100", "8.0000", new Date(0))));
         when(stockMapper.selectCount(any())).thenReturn(1L);
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("0", "8.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("0", "0"));
@@ -394,13 +418,7 @@ class InventoryServiceImplTest {
         gen1Void.setPartnerId(1L);
         ErpStockLog gen2Origin = purchaseLog(3, "50", "12.0000");
 
-        when(stockLogMapper.selectList(any()))
-            // origin = 全部非 VOID 流水
-            .thenReturn(new ArrayList<>(List.of(gen1Origin, gen2Origin)))
-            // voids 列表
-            .thenReturn(new ArrayList<>(List.of(gen1Void)))
-            // replay 用
-            .thenReturn(new ArrayList<>(List.of(gen1Origin, gen1Void, gen2Origin)));
+        stubReverse(List.of(gen1Origin, gen2Origin), List.of(gen1Void), List.of(gen1Origin, gen1Void, gen2Origin));
         when(stockMapper.selectCount(any())).thenReturn(1L);
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("50", "12.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("0", "0"));
@@ -425,9 +443,7 @@ class InventoryServiceImplTest {
         ErpStockLog void2 = voidLog(4, "-50", "12.0000");
         void2.setPartnerId(3L);
 
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(gen1Origin, gen2Origin)))
-            .thenReturn(new ArrayList<>(List.of(void1, void2)));
+        stubReverse(List.of(gen1Origin, gen2Origin), List.of(void1, void2), List.of());
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("0", "0"));
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
@@ -617,13 +633,13 @@ class InventoryServiceImplTest {
         ErpStockLog log = purchaseLog(1, "50", "10.0000");
         log.setPartnerType("SUPPLIER");
         log.setPartnerId(8L);
-        when(stockLogMapper.selectList(any())).thenReturn(List.of(log));
+        stubLogs(List.of(log));
         ErpSupplier supplier = new ErpSupplier();
         supplier.setId(8L);
         supplier.setName("钢材供应商");
         when(supplierMapper.selectByIds(any())).thenReturn(List.of(supplier));
 
-        var voList = service.listLogs(PRODUCT_ID);
+        var voList = logs();
 
         assertEquals(1, voList.size());
         assertEquals("钢材供应商", voList.get(0).getPartnerName());
@@ -634,13 +650,13 @@ class InventoryServiceImplTest {
         ErpStockLog log = saleLog(2, "-10", "10.0000");
         log.setPartnerType("CUSTOMER");
         log.setPartnerId(9L);
-        when(stockLogMapper.selectList(any())).thenReturn(List.of(log));
+        stubLogs(List.of(log));
         ErpCustomer customer = new ErpCustomer();
         customer.setId(9L);
         customer.setName("恒达设备");
         when(customerMapper.selectByIds(any())).thenReturn(List.of(customer));
 
-        var voList = service.listLogs(PRODUCT_ID);
+        var voList = logs();
 
         assertEquals(1, voList.size());
         assertEquals("恒达设备", voList.get(0).getPartnerName());
@@ -650,9 +666,9 @@ class InventoryServiceImplTest {
     void listLogs_无往来单位时名称为空() {
         ErpStockLog log = purchaseLog(1, "50", "10.0000");
         log.setPartnerType("NONE");
-        when(stockLogMapper.selectList(any())).thenReturn(List.of(log));
+        stubLogs(List.of(log));
 
-        var voList = service.listLogs(PRODUCT_ID);
+        var voList = logs();
 
         assertNull(voList.get(0).getPartnerName());
     }
@@ -668,7 +684,7 @@ class InventoryServiceImplTest {
         ErpStockLog l3 = saleLog(3, "-5", "10.0000");
         l3.setPartnerType("CUSTOMER");
         l3.setPartnerId(9L);
-        when(stockLogMapper.selectList(any())).thenReturn(List.of(l1, l2, l3));
+        stubLogs(List.of(l1, l2, l3));
         ErpSupplier supplier = new ErpSupplier();
         supplier.setId(8L);
         supplier.setName("钢材供应商");
@@ -678,7 +694,7 @@ class InventoryServiceImplTest {
         customer.setName("恒达设备");
         when(customerMapper.selectByIds(any())).thenReturn(List.of(customer));
 
-        var voList = service.listLogs(PRODUCT_ID);
+        var voList = logs();
 
         assertEquals("钢材供应商", voList.get(0).getPartnerName());
         assertEquals("钢材供应商", voList.get(1).getPartnerName());
@@ -734,51 +750,62 @@ class InventoryServiceImplTest {
     }
 
     @Test
-    void listStock_填充产品编码名称与类型() {
-        when(stockMapper.selectList(any())).thenReturn(List.of(stockRow("10", "10.0000")));
-        ErpProduct p = new ErpProduct();
-        p.setId(PRODUCT_ID);
-        p.setCode("XH001");
-        p.setName("钢管");
-        p.setType("MATERIAL");
-        when(productMapper.selectByIds(any())).thenReturn(List.of(p));
+    void pageStock_databaseFilterAndPage_keepsMetadataAndComputesAmount() {
+        ErpStockVo row = new ErpStockVo();
+        row.setProductId(PRODUCT_ID);
+        row.setWarehouseId(WAREHOUSE_ID);
+        row.setProductCode("XH001");
+        row.setProductName("钢管");
+        row.setType("MATERIAL");
+        row.setQty(new BigDecimal("10"));
+        row.setAvgCost(new BigDecimal("10.0000"));
+        row.setQtyScale(3);
+        row.setMinStock(new BigDecimal("20"));
+        when(stockMapper.countBalances("%xh001%", "MATERIAL")).thenReturn(201L);
+        when(stockMapper.selectBalancePage("%xh001%", "MATERIAL", 100L, 50)).thenReturn(List.of(row));
 
-        var voList = service.listStock(null, null);
+        var result = service.pageStock(" XH001 ", "MATERIAL", 3, 50);
 
-        assertEquals(1, voList.size());
-        assertEquals("XH001", voList.get(0).getProductCode());
-        assertEquals("钢管", voList.get(0).getProductName());
-        assertEquals("MATERIAL", voList.get(0).getType());
-        assertEquals(0, new BigDecimal("100.00").compareTo(voList.get(0).getStockAmount()));
+        assertEquals(201, result.getTotal());
+        assertEquals(1, result.getRows().size());
+        assertEquals("XH001", result.getRows().get(0).getProductCode());
+        assertEquals("钢管", result.getRows().get(0).getProductName());
+        assertEquals(3, result.getRows().get(0).getQtyScale());
+        assertEquals(new BigDecimal("100.00"), result.getRows().get(0).getStockAmount());
+        assertEquals(false, result.getRows().get(0).getCostMissing());
+        verify(stockMapper, never()).selectList(any());
+        verify(productMapper, never()).selectByIds(any());
     }
 
     @Test
-    void listStock_按类型过滤只返回该类型() {
-        when(stockMapper.selectList(any())).thenReturn(List.of(stockRow("10.0000", "10.0000")));
-        ErpProduct p = new ErpProduct();
-        p.setId(PRODUCT_ID);
-        p.setCode("XH001");
-        p.setName("钢管");
-        p.setType("MATERIAL");
-        when(productMapper.selectByIds(any())).thenReturn(List.of(p));
-
-        assertEquals(1, service.listStock(null, "MATERIAL").size());
-        assertTrue(service.listStock(null, "PRODUCT").isEmpty());
+    void pageStock_outOfRange_doesNotReturnFirstPage() {
+        when(stockMapper.countBalances(null, null)).thenReturn(1L);
+        var result = service.pageStock(null, null, 2, 100);
+        assertEquals(1, result.getTotal());
+        assertTrue(result.getRows().isEmpty());
+        verify(stockMapper, never()).selectBalancePage(any(), any(), org.mockito.ArgumentMatchers.anyLong(), anyInt());
     }
 
     @Test
-    void listStock_按关键字过滤命中编码或名称() {
-        when(stockMapper.selectList(any())).thenReturn(List.of(stockRow("10.0000", "10.0000")));
-        ErpProduct p = new ErpProduct();
-        p.setId(PRODUCT_ID);
-        p.setCode("XH001");
-        p.setName("钢管");
-        p.setType("MATERIAL");
-        when(productMapper.selectByIds(any())).thenReturn(List.of(p));
+    void pageStock_keywordWildcardsAreLiteral_andZeroCostFlagSurvives() {
+        ErpStockVo row = new ErpStockVo();
+        row.setQty(BigDecimal.TEN);
+        row.setAvgCost(BigDecimal.ZERO);
+        when(stockMapper.countBalances("%a!%!!!_%", null)).thenReturn(1L);
+        when(stockMapper.selectBalancePage("%a!%!!!_%", null, 0, 50)).thenReturn(List.of(row));
+        var result = service.pageStock("A%!_", "  ", 1, 50);
+        assertTrue(result.getRows().get(0).getCostMissing());
+        assertEquals(new BigDecimal("0.00"), result.getRows().get(0).getStockAmount());
+    }
 
-        assertEquals(1, service.listStock("XH001", null).size());
-        assertEquals(1, service.listStock("钢管", null).size());
-        assertTrue(service.listStock("不存在", null).isEmpty());
+    @Test
+    void pageStock_invalidPagingTypeAndKeyword_failBeforeQuery() {
+        assertThrows(ServiceException.class, () -> service.pageStock(null, null, 0, 50));
+        assertThrows(ServiceException.class, () -> service.pageStock(null, null, 1, 0));
+        assertThrows(ServiceException.class, () -> service.pageStock(null, null, 1, 101));
+        assertThrows(ServiceException.class, () -> service.pageStock(null, "BAD", 1, 50));
+        assertThrows(ServiceException.class, () -> service.pageStock("a".repeat(101), null, 1, 50));
+        verify(stockMapper, never()).countBalances(any(), any());
     }
 
     // ---------- 单据级撤回 reverseByBill（DOC/31 §13.4 P0-2） ----------
@@ -793,12 +820,9 @@ class InventoryServiceImplTest {
         // 单据级撤回必须一次冲完两行，且每个商品只重放一次均价
         ErpStockLog line1 = purchaseLog(1, "100", "10.0000");
         ErpStockLog line2 = purchaseLog(3, "50", "10.0000");
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(line1, line2)))
-            .thenReturn(new ArrayList<>())
-            .thenReturn(new ArrayList<>(List.of(line1, line2,
-                voidLogOf(PRODUCT_ID, 2, "-100", "10.0000", 1L),
-                voidLogOf(PRODUCT_ID, 4, "-50", "10.0000", 3L))));
+        stubReverse(List.of(line1, line2), List.of(), List.of(line1, line2,
+            voidLogOf(PRODUCT_ID, 2, "-100", "10.0000", 1L),
+            voidLogOf(PRODUCT_ID, 4, "-50", "10.0000", 3L)));
         when(stockMapper.selectCount(any())).thenReturn(1L);
         when(stockMapper.selectForUpdate(PRODUCT_ID, WAREHOUSE_ID)).thenReturn(stockRow("150", "10.0000"));
         when(stockMapper.selectOne(any())).thenReturn(stockRow("0", "0"));
@@ -831,22 +855,17 @@ class InventoryServiceImplTest {
         ErpStockLog finished = logRow(FINISHED, 32, "PROD_IN", "SC0001", "10", "30.0000", new Date(0));
         ErpStockLog materialB = logRow(MATERIAL_B, 31, "PROD_OUT", "SC0001", "-3", "7.0000", new Date(0));
         ErpStockLog materialA = logRow(MATERIAL_A, 30, "PROD_OUT", "SC0001", "-5", "10.0000", new Date(0));
-        when(stockLogMapper.selectList(any()))
-            // origin 故意打乱顺序：成品 → 原料B → 原料A
-            .thenReturn(new ArrayList<>(List.of(finished, materialB, materialA)))
-            .thenReturn(new ArrayList<>())
-            // 重放按 lockOrder 的商品升序：501、502、900
-            .thenReturn(new ArrayList<>(List.of(
-                logRow(MATERIAL_A, 10, "PURCHASE", "P0009", "10", "10.0000", new Date(-86400000L)),
-                materialA,
-                voidLogOf(MATERIAL_A, 40, "5", "10.0000", 30L))))
-            .thenReturn(new ArrayList<>(List.of(
-                logRow(MATERIAL_B, 11, "PURCHASE", "P0009", "10", "7.0000", new Date(-86400000L)),
-                materialB,
-                voidLogOf(MATERIAL_B, 41, "3", "7.0000", 31L))))
-            .thenReturn(new ArrayList<>(List.of(
-                finished,
-                voidLogOf(FINISHED, 42, "-10", "30.0000", 32L))));
+        when(stockLogMapper.selectBillStockKeys("SC0001")).thenReturn(List.of(finished, materialB, materialA));
+        when(stockLogMapper.selectBillRowsForUpdate("SC0001", null, null))
+            .thenReturn(List.of(finished, materialB, materialA));
+        when(stockLogMapper.selectReplayRowsForUpdate(MATERIAL_A, WAREHOUSE_ID)).thenReturn(List.of(
+            logRow(MATERIAL_A, 10, "PURCHASE", "P0009", "10", "10.0000", new Date(-86400000L)),
+            materialA, voidLogOf(MATERIAL_A, 40, "5", "10.0000", 30L)));
+        when(stockLogMapper.selectReplayRowsForUpdate(MATERIAL_B, WAREHOUSE_ID)).thenReturn(List.of(
+            logRow(MATERIAL_B, 11, "PURCHASE", "P0009", "10", "7.0000", new Date(-86400000L)),
+            materialB, voidLogOf(MATERIAL_B, 41, "3", "7.0000", 31L)));
+        when(stockLogMapper.selectReplayRowsForUpdate(FINISHED, WAREHOUSE_ID)).thenReturn(List.of(
+            finished, voidLogOf(FINISHED, 42, "-10", "30.0000", 32L)));
         when(stockMapper.selectCount(any())).thenReturn(1L);
         when(stockMapper.selectForUpdate(MATERIAL_A, WAREHOUSE_ID)).thenReturn(stockRow("10", "10.0000"));
         when(stockMapper.selectForUpdate(MATERIAL_B, WAREHOUSE_ID)).thenReturn(stockRow("10", "7.0000"));
@@ -874,9 +893,7 @@ class InventoryServiceImplTest {
     @Test
     void reverseByBill_已全部冲销时拒绝重复撤回() {
         ErpStockLog origin = purchaseLog(1, "50", "10.0000");
-        when(stockLogMapper.selectList(any()))
-            .thenReturn(new ArrayList<>(List.of(origin)))
-            .thenReturn(new ArrayList<>(List.of(voidLogOf(PRODUCT_ID, 2, "-50", "10.0000", 1L))));
+        stubReverse(List.of(origin), List.of(voidLogOf(PRODUCT_ID, 2, "-50", "10.0000", 1L)), List.of());
 
         ServiceException ex = assertThrows(ServiceException.class,
             () -> service.reverseByBill("P0001", 200L, new Date(0)));
@@ -887,7 +904,8 @@ class InventoryServiceImplTest {
 
     @Test
     void reverseByBill_无原始流水时抛出未找到() {
-        when(stockLogMapper.selectList(any())).thenReturn(new ArrayList<>());
+        when(stockLogMapper.selectBillRowsForUpdate(any(), any(), any())).thenReturn(List.of());
+        when(stockLogMapper.selectBillStockKeys(any())).thenReturn(List.of());
 
         ServiceException ex = assertThrows(ServiceException.class,
             () -> service.reverseByBill("S9999", 300L, new Date(0)));
@@ -1002,8 +1020,33 @@ class InventoryServiceImplTest {
     }
 
     private void stubForReplay(List<ErpStockLog> logs) {
-        when(stockLogMapper.selectList(any())).thenReturn(new ArrayList<>(logs));
+        when(stockLogMapper.selectReplayRowsForUpdate(any(), any())).thenReturn(logs);
         when(stockMapper.selectCount(any())).thenReturn(1L);
+    }
+
+    private void stubReverse(List<ErpStockLog> origins, List<ErpStockLog> voids, List<ErpStockLog> replayRows) {
+        List<ErpStockLog> rows = new ArrayList<>(origins);
+        rows.addAll(voids);
+        when(stockLogMapper.selectBillRowsForUpdate(any(), any(), any())).thenReturn(rows);
+        when(stockLogMapper.selectBillStockKeys(any())).thenReturn(origins);
+        stubForReplay(replayRows);
+    }
+
+    private void stubLogs(List<ErpStockLog> logs) {
+        List<ErpStockLogVo> rows = logs.stream().map(r -> {
+            ErpStockLogVo vo = new ErpStockLogVo();
+            vo.setId(r.getId());
+            vo.setBizType(r.getBizType());
+            vo.setPartnerType(r.getPartnerType());
+            vo.setPartnerId(r.getPartnerId());
+            vo.setBizDate(LocalDate.of(1970, 1, 1));
+            return vo;
+        }).toList();
+        when(stockLogMapper.selectLogPage(eq(PRODUCT_ID), any(), any(), any(), any(), anyInt())).thenReturn(rows);
+    }
+
+    private List<ErpStockLogVo> logs() {
+        return service.pageLogs(PRODUCT_ID, LocalDate.of(1970, 1, 1), LocalDate.of(1970, 12, 31), 50, null, null).rows();
     }
 
     private BigDecimal capturedAvg() {

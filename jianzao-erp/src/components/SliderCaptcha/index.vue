@@ -14,7 +14,14 @@
                   stroke-width="1.4"
                   stroke-linejoin="round"
                 />
-                <path d="M7.4 9.9l1.9 1.9 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                <path
+                  d="M7.4 9.9l1.9 1.9 3.5-3.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
             </span>
             <div class="sc-head-text">
@@ -524,11 +531,11 @@ onBeforeUnmount(() => {
   animation: none !important;
 }
 
-:global(.sc-card #tianai-captcha-loading[style*="display: none"]) {
+:global(.sc-card #tianai-captcha-loading[style*='display: none']) {
   display: none !important;
 }
 
-:global(.sc-card #tianai-captcha-loading:not([style*="display: none"])) {
+:global(.sc-card #tianai-captcha-loading:not([style*='display: none'])) {
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -546,8 +553,12 @@ onBeforeUnmount(() => {
 }
 
 @keyframes sc-spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 </style>
 

@@ -98,12 +98,16 @@
         </t-form-item>
         <t-form-item label="访问站点" name="endpoint">
           <t-input v-model="form.endpoint" placeholder="请输入访问站点">
-            <template #label><span style="color: #999">{{ protocol }}</span></template>
+            <template #label
+              ><span style="color: #999">{{ protocol }}</span></template
+            >
           </t-input>
         </t-form-item>
         <t-form-item label="自定义域名" name="domain">
           <t-input v-model="form.domain" placeholder="请输入自定义域名">
-            <template #label><span style="color: #999">{{ protocol }}</span></template>
+            <template #label
+              ><span style="color: #999">{{ protocol }}</span></template
+            >
           </t-input>
         </t-form-item>
         <t-form-item label="accessKey" name="accessKey">

@@ -55,7 +55,8 @@ mergeSavedWidths('system-user/online-device', deviceColumns);
 
 /** 删除按钮操作 */
 const handldDelOnline = (row: any) => {
-  proxy.$modal.confirm('删除设备后，在该设备登录需要重新进行验证')
+  proxy.$modal
+    .confirm('删除设备后，在该设备登录需要重新进行验证')
     .then(() => {
       return delOnline(row.tokenId);
     })

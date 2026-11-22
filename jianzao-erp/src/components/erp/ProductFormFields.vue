@@ -6,7 +6,7 @@
  * 组件只负责渲染字段，校验规则由父级表单的 rules 决定（字段名与本组件的 name 一一对应）。
  *
  * 用法：
- *   <ProductFormFields v-model="form" :category-options="..." :supplier-options="..." />
+ *   <ProductFormFields v-model="form" />
  *   外层父级 t-form 提供 :data/:rules 与标签配置。
  *
  * 标签一律由父表单继承（两个父容器都设 label-align="top"），本组件不写死 label-width：
@@ -15,14 +15,14 @@
  */
 import { ERP_PRODUCT_TYPE, ERP_QTY_SCALE_OPTIONS, ERP_TAX_TYPE } from '@/api/erp/enums';
 import type { ErpProductType, ErpTaxType } from '@/api/erp/enums';
-import type { ErpProductCategoryVO, ErpProductFormModel, ErpSupplierVO } from '@/api/erp/types';
+import { productCategoryOptions, productCategoryOptionsByIds, supplierOptions, supplierOptionsByIds } from '@/api/erp/master';
+import type { ErpId, ErpProductFormModel } from '@/api/erp/types';
+import ErpPagedSelect from './ErpPagedSelect.vue';
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
-    /** 商品分类候选项；不传则不渲染分类下拉 */
-    categoryOptions?: ErpProductCategoryVO[];
-    /** 所属供应商候选项；不传则不渲染供应商下拉 */
-    supplierOptions?: ErpSupplierVO[];
+    /** 商品资料只允许新选启用分类，已选停用分类仍按 ID 回显。 */
+    activeCategoryOnly?: boolean;
     /** 是否展示「类型」（现录现卖固定成品，不展示） */
     showType?: boolean;
     /** 是否展示「状态」（现录现卖新建即启用，不展示） */
@@ -35,8 +35,7 @@ const props = withDefaults(
     showAddCategory?: boolean;
   }>(),
   {
-    categoryOptions: () => [],
-    supplierOptions: () => [],
+    activeCategoryOnly: false,
     showType: true,
     showStatus: true,
     costReadonly: true,
@@ -57,11 +56,7 @@ const productTypeOptions = Object.entries(ERP_PRODUCT_TYPE).map(([value, item]) 
 /** 发票类型下拉：同上，Record 转数组 */
 const taxTypeOptions = Object.entries(ERP_TAX_TYPE).map(([value, item]) => ({ label: item.label, value: value as ErpTaxType }));
 
-/** 商品分类下拉：VO 列表转 {label,value} */
-const categorySelectOptions = computed(() => props.categoryOptions.map((item) => ({ label: item.name, value: item.id })));
-
-/** 所属供应商下拉：VO 列表转 {label,value} */
-const supplierSelectOptions = computed(() => props.supplierOptions.map((item) => ({ label: item.name, value: item.id })));
+const nameLabel = (item: { id: ErpId; name?: string }) => item.name ?? String(item.id);
 </script>
 
 <template>
@@ -101,7 +96,14 @@ const supplierSelectOptions = computed(() => props.supplierOptions.map((item) =>
     <t-col :span="6">
       <t-form-item label="商品分类" name="categoryId">
         <div class="flex w-full items-center gap-1">
-          <t-select v-model="model.categoryId" placeholder="请选择分类（可留空）" clearable filterable :options="categorySelectOptions" />
+          <ErpPagedSelect
+            v-model="model.categoryId"
+            placeholder="请选择分类（可留空）"
+            :fetch-page="productCategoryOptions"
+            :fetch-by-ids="productCategoryOptionsByIds"
+            :status="activeCategoryOnly ? 1 : undefined"
+            :label="nameLabel"
+          />
           <t-button v-if="showAddCategory" v-hasPermi="['erp:product-category:add']" theme="primary" variant="text" @click="emit('add-category')">
             新增
           </t-button>
@@ -119,7 +121,13 @@ const supplierSelectOptions = computed(() => props.supplierOptions.map((item) =>
     <!-- 所属供应商：独占整行（容纳长供应商名称，避免下拉截断） -->
     <t-col :span="12">
       <t-form-item label="所属供应商" name="supplierId">
-        <t-select v-model="model.supplierId" placeholder="请选择供应商（可留空）" clearable filterable :options="supplierSelectOptions" />
+        <ErpPagedSelect
+          v-model="model.supplierId"
+          placeholder="请选择供应商（可留空）"
+          :fetch-page="supplierOptions"
+          :fetch-by-ids="supplierOptionsByIds"
+          :label="nameLabel"
+        />
       </t-form-item>
     </t-col>
     <t-col :span="12">

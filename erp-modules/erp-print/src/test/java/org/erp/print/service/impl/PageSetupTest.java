@@ -34,9 +34,12 @@ class PageSetupTest {
     }
 
     @Test
-    @DisplayName("其他自定义纸按 宽x高 mm 输出")
+    @DisplayName("其他自定义纸按 宽x高 mm 输出，设计器纸张值转成有效CSS且范围受限")
     void customPaper() {
         assertEquals("@page { size: 380mm 280mm; margin: 8mm; }", PageSetup.pageRule("380x280", null));
+        assertEquals("241mm 93mm", PageSetup.safePageSize("241x93"));
+        assertEquals("A4", PageSetup.safePageSize("<style>bad</style>"));
+        assertNull(PageSetup.pageRule("999999x1", null));
     }
 
     @Test

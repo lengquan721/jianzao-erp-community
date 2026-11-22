@@ -152,7 +152,9 @@
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">{{ readonly ? '关 闭' : '取 消' }}</t-button>
             <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存草稿</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:finance:other-flow:confirm'])" theme="success" @click="submitForm(true)">保存并确认</t-button>
+            <t-button v-if="!readonly && checkPermi(['erp:finance:other-flow:confirm'])" theme="success" @click="submitForm(true)"
+              >保存并确认</t-button
+            >
           </div>
         </div>
       </template>
@@ -172,8 +174,9 @@ import {
   withdrawOtherFlow
 } from '@/api/erp/finance';
 import { accountOptions as accountOptionsFn } from '@/api/erp/account';
+import type { FinAccountOption } from '@/api/erp/account';
 import { ERP_BILL_STATUS, ERP_FLOW_TYPE } from '@/api/erp/enums';
-import type { ErpBillStatus, ErpFlowType, ErpId, FinAccountVO, FinOtherFlowForm, FinOtherFlowQuery, FinOtherFlowVO } from '@/api/erp/types';
+import type { ErpBillStatus, ErpFlowType, ErpId, FinOtherFlowForm, FinOtherFlowQuery, FinOtherFlowVO } from '@/api/erp/types';
 import { formatMoney, roundMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
@@ -211,7 +214,7 @@ const flowTypeOptions = [
 ];
 
 /** 启用账户下拉（DOC/25 §4.5，页面加载取一次） */
-const accountOptions = ref<FinAccountVO[]>([]);
+const accountOptions = ref<FinAccountOption[]>([]);
 const loadAccountOptions = async () => {
   try {
     const res = await accountOptionsFn();
@@ -397,13 +400,13 @@ const submitForm = async (confirm: boolean) => {
   // t-form 的 validate() 失败是 resolve(false)（或错误对象），不是 reject
   const r = await flowFormRef.value?.validate().catch(() => false);
   const ok = r === true || r === undefined;
-  if (!ok) return;
+  if (!ok || readonly.value || (confirm && !checkPermi(['erp:finance:other-flow:confirm']))) return;
   if (!(form.amount > 0)) {
     proxy?.$modal.msgWarning('金额必须大于 0');
     return;
   }
   // 结算账户：新建必填；存量单沿用 account 文本（与后端 saveHead 口径一致）
-  if (!form.accountId && !form.accountText) {
+  if ((!form.id && !form.accountId) || (form.id && !form.accountId && !form.accountText)) {
     proxy?.$modal.msgWarning('请选择结算账户');
     return;
   }

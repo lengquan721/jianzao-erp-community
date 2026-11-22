@@ -17,6 +17,7 @@ import org.dromara.system.domain.vo.SysUserVo;
 import org.dromara.system.mapper.SysNoticeMapper;
 import org.dromara.system.mapper.SysUserMapper;
 import org.dromara.system.service.ISysNoticeService;
+import org.dromara.system.utils.NoticeHtmlSanitizer;
 import org.springframework.stereotype.Service;
 
 import java.util.Arrays;
@@ -45,6 +46,7 @@ public class SysNoticeServiceImpl implements ISysNoticeService {
     public TableDataInfo<SysNoticeVo> selectPageNoticeList(SysNoticeBo notice, PageQuery pageQuery) {
         LambdaQueryWrapper<SysNotice> lqw = buildQueryWrapper(notice);
         Page<SysNoticeVo> page = baseMapper.selectVoPage(pageQuery.build(), lqw);
+        page.getRecords().forEach(SysNoticeServiceImpl::sanitizeNoticeContent);
         return TableDataInfo.build(page);
     }
 
@@ -56,7 +58,9 @@ public class SysNoticeServiceImpl implements ISysNoticeService {
      */
     @Override
     public SysNoticeVo selectNoticeById(Long noticeId) {
-        return baseMapper.selectVoById(noticeId);
+        SysNoticeVo notice = baseMapper.selectVoById(noticeId);
+        sanitizeNoticeContent(notice);
+        return notice;
     }
 
     /**
@@ -68,7 +72,15 @@ public class SysNoticeServiceImpl implements ISysNoticeService {
     @Override
     public List<SysNoticeVo> selectNoticeList(SysNoticeBo notice) {
         LambdaQueryWrapper<SysNotice> lqw = buildQueryWrapper(notice);
-        return baseMapper.selectVoList(lqw);
+        List<SysNoticeVo> notices = baseMapper.selectVoList(lqw);
+        notices.forEach(SysNoticeServiceImpl::sanitizeNoticeContent);
+        return notices;
+    }
+
+    private static void sanitizeNoticeContent(SysNoticeVo notice) {
+        if (notice != null) {
+            notice.setNoticeContent(NoticeHtmlSanitizer.sanitize(notice.getNoticeContent()));
+        }
     }
 
     private LambdaQueryWrapper<SysNotice> buildQueryWrapper(SysNoticeBo bo) {
@@ -92,6 +104,7 @@ public class SysNoticeServiceImpl implements ISysNoticeService {
     @Override
     public int insertNotice(SysNoticeBo bo) {
         SysNotice notice = MapstructUtils.convert(bo, SysNotice.class);
+        notice.setNoticeContent(NoticeHtmlSanitizer.sanitize(bo.getNoticeContent()));
         return baseMapper.insert(notice);
     }
 
@@ -104,6 +117,7 @@ public class SysNoticeServiceImpl implements ISysNoticeService {
     @Override
     public int updateNotice(SysNoticeBo bo) {
         SysNotice notice = MapstructUtils.convert(bo, SysNotice.class);
+        notice.setNoticeContent(NoticeHtmlSanitizer.sanitize(bo.getNoticeContent()));
         return baseMapper.updateById(notice);
     }
 

@@ -17,6 +17,7 @@ import org.dromara.common.log.event.LogininforEvent;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.system.domain.SysLogininfor;
 import org.dromara.system.domain.bo.SysLogininforBo;
 import org.dromara.system.domain.vo.SysClientVo;
@@ -97,8 +98,8 @@ public class SysLogininforServiceImpl implements ISysLogininforService {
         } else if (Constants.LOGIN_FAIL.equals(logininforEvent.getStatus())) {
             logininfor.setStatus(Constants.FAIL);
         }
-        // 插入数据
-        insertLogininfor(logininfor);
+        // 异步线程没有请求线程的租户 ThreadLocal，写登录日志时恢复事件携带的租户上下文。
+        TenantHelper.dynamic(logininforEvent.getTenantId(), () -> insertLogininfor(logininfor));
     }
 
     private String getBlock(Object msg) {

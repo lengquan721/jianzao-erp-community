@@ -43,6 +43,7 @@ public class OrderSchemaGuard implements ApplicationRunner {
         {"biz_sale", "contact_phone"},
         {"biz_sale", "delivery_address"},
         {"biz_sale_item", "source_order_item_id"},
+        {"biz_sale_return", "refund_account_id"},
         {"fin_ar_ap", "active_flag"}
     };
 

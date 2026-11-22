@@ -1,6 +1,7 @@
 package org.erp.fin.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
@@ -96,10 +97,7 @@ public class FinOtherFlowServiceImpl implements IFinOtherFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public FinOtherFlowVo update(Long id, FinOtherFlowBo bo) {
-        FinOtherFlow head = flowMapper.selectById(id);
-        if (head == null) {
-            throw new ServiceException("其他收支单不存在");
-        }
+        FinOtherFlow head = lockBill(id);
         if (!"DRAFT".equals(head.getStatus())) {
             throw new ServiceException("仅草稿可编辑", 40902);
         }
@@ -127,17 +125,14 @@ public class FinOtherFlowServiceImpl implements IFinOtherFlowService {
         if (head.getId() == null) {
             flowMapper.insert(head);
         } else {
-            flowMapper.updateById(head);
+            requireOneRow(flowMapper.update(head, statusOf(head.getId(), "DRAFT")));
         }
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void confirm(Long id) {
-        FinOtherFlow head = flowMapper.selectById(id);
-        if (head == null) {
-            throw new ServiceException("其他收支单不存在");
-        }
+        FinOtherFlow head = lockBill(id);
         if (!"DRAFT".equals(head.getStatus())) {
             throw new ServiceException("仅草稿可确认", 40902);
         }
@@ -152,47 +147,42 @@ public class FinOtherFlowServiceImpl implements IFinOtherFlowService {
         head.setStatus("CONFIRMED");
         head.setConfirmedAt(new Date());
         head.setConfirmedBy(currentUserId());
-        flowMapper.updateById(head);
+        requireOneRow(flowMapper.update(head, statusOf(head.getId(), "DRAFT")));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void withdraw(Long id) {
-        FinOtherFlow head = flowMapper.selectById(id);
-        if (head == null) {
-            throw new ServiceException("其他收支单不存在");
-        }
+        FinOtherFlow head = lockBill(id);
         if (!"CONFIRMED".equals(head.getStatus())) {
             throw new ServiceException("仅已确认单据可撤回", 40902);
         }
-        costLedgerService.reverseBySource("OTHER_FLOW", id);
+        withdrawLocked(head);
+    }
+
+    private void withdrawLocked(FinOtherFlow head) {
+        costLedgerService.reverseBySource("OTHER_FLOW", head.getId());
         head.setStatus("DRAFT");
         head.setWithdrawnAt(new Date());
         head.setWithdrawnBy(currentUserId());
-        flowMapper.updateById(head);
+        requireOneRow(flowMapper.update(head, statusOf(head.getId(), "CONFIRMED")));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void voidBill(Long id) {
-        FinOtherFlow head = flowMapper.selectById(id);
-        if (head == null) {
-            throw new ServiceException("其他收支单不存在");
-        }
+        FinOtherFlow head = lockBill(id);
         if ("VOID".equals(head.getStatus())) {
             throw new ServiceException("单据已作废");
         }
-        // DRAFT 草稿不再走作废：草稿应走删除（逻辑删除），作废会把草稿固化成终态单据并占用唯一键
         if (!"CONFIRMED".equals(head.getStatus())) {
             throw new ServiceException("草稿单据请使用删除", 40902);
         }
-        // CONFIRMED：先撤回（冲销成本台账）回草稿，再置作废
-        withdraw(id);
-        head = flowMapper.selectById(id);
+        withdrawLocked(head);
         head.setStatus("VOID");
         head.setVoidedAt(new Date());
         head.setVoidedBy(currentUserId());
-        flowMapper.updateById(head);
+        requireOneRow(flowMapper.update(head, statusOf(id, "DRAFT")));
     }
 
     /**
@@ -234,13 +224,29 @@ public class FinOtherFlowServiceImpl implements IFinOtherFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteDraft(Long id) {
-        FinOtherFlow head = flowMapper.selectById(id);
-        if (head == null) {
-            throw new ServiceException("其他收支单不存在");
-        }
+        FinOtherFlow head = lockBill(id);
         if (!"DRAFT".equals(head.getStatus())) {
             throw new ServiceException("仅草稿单据可删除，已确认/已作废单据请先撤回或作废处理", 40902);
         }
-        flowMapper.deleteById(id);
+        requireOneRow(flowMapper.delete(new LambdaQueryWrapper<FinOtherFlow>()
+            .eq(FinOtherFlow::getId, id).eq(FinOtherFlow::getStatus, "DRAFT")));
+    }
+
+    private FinOtherFlow lockBill(Long id) {
+        FinOtherFlow head = flowMapper.lockById(id);
+        if (head == null) {
+            throw new ServiceException("其他收支单不存在");
+        }
+        return head;
+    }
+
+    private static LambdaUpdateWrapper<FinOtherFlow> statusOf(Long id, String status) {
+        return new LambdaUpdateWrapper<FinOtherFlow>().eq(FinOtherFlow::getId, id).eq(FinOtherFlow::getStatus, status);
+    }
+
+    private static void requireOneRow(int rows) {
+        if (rows != 1) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
     }
 }

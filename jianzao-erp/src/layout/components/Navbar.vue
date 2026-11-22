@@ -36,7 +36,7 @@
         </t-tooltip>
         <!-- 消息 -->
         <t-tooltip :content="proxy.$t('navbar.message')" placement="bottom">
-          <div style="display:flex;align-items:center">
+          <div style="display: flex; align-items: center">
             <t-popup placement="bottom" trigger="click" :overlay-inner-style="{ width: '300px' }">
               <t-badge :count="newNotice" :max-count="99">
                 <div class="right-menu-item hover-effect"><svg-icon icon-class="message" /></div>
@@ -95,8 +95,8 @@ import { TenantVO } from '@/api/types';
 import notice from './notice/index.vue';
 import router from '@/router';
 import { NavTypeEnum } from '@/enums/NavTypeEnum';
-import Logo from "@/layout/components/Sidebar/Logo.vue";
-import TopBar from './TopBar'
+import Logo from '@/layout/components/Sidebar/Logo.vue';
+import TopBar from './TopBar/index.vue';
 
 const appStore = useAppStore();
 const userStore = useUserStore();
@@ -296,7 +296,6 @@ watch(
     margin-left: 8px;
   }
 
-
   .errLog-container {
     display: inline-block;
     vertical-align: top;
@@ -324,7 +323,9 @@ watch(
 
       &.hover-effect {
         cursor: pointer;
-        transition: background 0.2s ease, color 0.2s ease;
+        transition:
+          background 0.2s ease,
+          color 0.2s ease;
 
         &:hover {
           background: var(--td-bg-color-container-hover);

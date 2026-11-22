@@ -129,6 +129,7 @@ create table sys_tenant_package (
     package_id              number(20)      not null,
     package_name            varchar2(20)    default '',
     menu_ids                varchar2(3000)  default '',
+    employee_menu_ids                varchar2(3000)  default '',
     remark                  varchar2(200)   default '',
     menu_check_strictly     number(1)       default 1,
     status                  char(1)         default '0',

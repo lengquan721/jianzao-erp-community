@@ -91,12 +91,7 @@
         @column-resize-change="(ctx: any) => saveColumnWidths('system/oss/list', ctx.columnsWidth)"
       >
         <template #url="{ row }">
-          <ImagePreview
-            v-if="previewListResource && checkFileSuffix(row.fileSuffix)"
-            :width="100"
-            :height="100"
-            :src="row.url"
-          />
+          <ImagePreview v-if="previewListResource && checkFileSuffix(row.fileSuffix)" :width="100" :height="100" :src="row.url" />
           <span v-if="!checkFileSuffix(row.fileSuffix) || !previewListResource" v-text="row.url" />
         </template>
         <template #createTime="{ row }">

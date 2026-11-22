@@ -8,10 +8,16 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   backend:
     name: 后端构建与测试
     runs-on: ubuntu-latest
+    env:
+      SPRING_PROFILES_ACTIVE: audit-test
     steps:
       - uses: actions/checkout@v4
 
@@ -24,11 +30,27 @@ jobs:
             jianzao-backend/pom.xml
             erp-modules/pom.xml
 
-      - name: 安装底座
-        run: mvn -B -f jianzao-backend/pom.xml install -DskipTests
+      - name: 报告门禁与只读冒烟回归测试
+        run: |
+          python3 -B -m unittest discover -s integration-tests -p test_verify_ci_reports.py -v
+          python3 -I -B deploy/debian-native/test_smoke_readonly.py -v
 
-      - name: 业务模块单元测试
-        run: mvn -B -f erp-modules/pom.xml test
+      - name: ERP 五模块单元测试与核心边界报告校验
+        run: |
+          started_at_ns="$(python3 -B -c 'import time; print(time.time_ns())')"
+          mvn -B -f jianzao-backend/pom.xml -Pdev test \
+            -pl ../erp-modules/erp-master,../erp-modules/erp-stock,../erp-modules/erp-trade,../erp-modules/erp-fin,../erp-modules/erp-print -am
+          python3 -B integration-tests/verify_ci_reports.py verify erp --started-at-ns "$started_at_ns"
+
+      - name: 平台模块白名单单元测试与报告校验
+        run: |
+          platform_tests="$(python3 -B integration-tests/verify_ci_reports.py platform-allowlist)"
+          platform_modules="$(python3 -B integration-tests/verify_ci_reports.py platform-reactor)"
+          started_at_ns="$(python3 -B -c 'import time; print(time.time_ns())')"
+          # -Pdev 保留 Surefire 的 dev 标签；仅执行 admin/system 显式白名单，不执行 demo SpringBootTest。
+          mvn -B -f jianzao-backend/pom.xml -Pdev test -pl "$platform_modules" -am \
+            "-Dtest=$platform_tests" -Dsurefire.failIfNoSpecifiedTests=false
+          python3 -B integration-tests/verify_ci_reports.py verify platform --started-at-ns "$started_at_ns"
 
   frontend:
     name: 前端构建
@@ -39,18 +61,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
         with:
-          version: 10
+          node-version: '24.11.0'
+          # 先准备 Node，再装 pnpm；此处不查找 pnpm store。
+          package-manager-cache: false
 
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
         with:
-          node-version: '22'
-          cache: pnpm
-          cache-dependency-path: jianzao-erp/pnpm-lock.yaml
+          package_json_file: jianzao-erp/package.json # packageManager: pnpm@11.3.0
+          run_install: false
 
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
+      - name: 冻结安装依赖
+        run: |
+          node --version
+          pnpm --version
+          pnpm install --frozen-lockfile
+
+      - name: 前端单元测试
+        run: pnpm exec vitest run
+
+      - name: Vue 类型检查
+        run: pnpm exec vue-tsc --noEmit -p tsconfig.json
+
+      - name: ESLint 检查全部 src
+        run: pnpm exec eslint src
 
       - name: 生产构建
         run: pnpm build:prod
+
+      - name: 依赖安全审计
+        env:
+          # pnpm 11 使用 pnpm_config_*；镜像不一定提供 advisories API。
+          pnpm_config_registry: https://registry.npmjs.org/
+        run: pnpm audit --audit-level=low

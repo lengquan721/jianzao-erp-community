@@ -1,7 +1,7 @@
 package org.dromara.common.web.filter;
 
-import cn.hutool.core.io.IoUtil;
 import org.dromara.common.core.constant.Constants;
+import org.dromara.common.core.utils.RequestBodyLimits;
 
 import jakarta.servlet.ReadListener;
 import jakarta.servlet.ServletInputStream;
@@ -28,7 +28,8 @@ public class RepeatedlyRequestWrapper extends HttpServletRequestWrapper {
         request.setCharacterEncoding(Constants.UTF8);
         response.setCharacterEncoding(Constants.UTF8);
 
-        body = IoUtil.readBytes(request.getInputStream(), false);
+        body = RequestBodyLimits.readLimited(request.getInputStream(),
+            RequestBodyLimits.plainLimit(request));
     }
 
     @Override
@@ -47,17 +48,17 @@ public class RepeatedlyRequestWrapper extends HttpServletRequestWrapper {
 
             @Override
             public int available() throws IOException {
-                return body.length;
+                return bais.available();
             }
 
             @Override
             public boolean isFinished() {
-                return false;
+                return bais.available() == 0;
             }
 
             @Override
             public boolean isReady() {
-                return false;
+                return true;
             }
 
             @Override

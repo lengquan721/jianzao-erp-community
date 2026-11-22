@@ -25,7 +25,7 @@ public class FinAccountFlowVo {
     private BigDecimal amount;
 
     /**
-     * IN=入账（收款/其他收入），OUT=出账（付款/其他支出）
+     * IN=入账（普通收款/其他收入），OUT=出账（退款/付款/其他支出）
      */
     private String direction;
 

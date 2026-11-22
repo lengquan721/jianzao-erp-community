@@ -1,6 +1,7 @@
 package org.erp.trade.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
@@ -190,7 +191,8 @@ public class ErpOtherInServiceImpl implements IErpOtherInService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void confirm(Long id) {
-        ErpOtherIn head = otherInMapper.selectById(id);
+        // 行锁：确认/撤回/作废的第一把锁必须是单据头，与销售单加锁顺序一致
+        ErpOtherIn head = otherInMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他入库单不存在");
         }
@@ -210,10 +212,18 @@ public class ErpOtherInServiceImpl implements IErpOtherInService {
                 row.getProductId(), warehouseService.defaultWarehouseId(), row.getQty(),
                 row.getUnitCost(), "NONE", null, head.getBizDate(), seq++);
         }
-        head.setStatus("CONFIRMED");
+        // 状态 CAS：只有 DRAFT 能改成 CONFIRMED，并发双击/跨节点时第二个请求返回 40902
         head.setConfirmedAt(new Date());
         head.setConfirmedBy(currentUserId());
-        otherInMapper.updateById(head);
+        int rows = otherInMapper.update(null, new UpdateWrapper<ErpOtherIn>()
+            .eq("id", head.getId()).eq("status", "DRAFT")
+            .set("status", "CONFIRMED")
+            .set("confirmed_at", head.getConfirmedAt())
+            .set("confirmed_by", head.getConfirmedBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        head.setStatus("CONFIRMED");
         // D4：回写最近入库成本（DOC/26 §9.4），仅参考、撤回不回退
         for (ErpOtherInItem row : items) {
             productService.updateCostPrice(row.getProductId(), row.getUnitCost());
@@ -223,7 +233,7 @@ public class ErpOtherInServiceImpl implements IErpOtherInService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void withdraw(Long id) {
-        ErpOtherIn head = otherInMapper.selectById(id);
+        ErpOtherIn head = otherInMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他入库单不存在");
         }
@@ -232,16 +242,25 @@ public class ErpOtherInServiceImpl implements IErpOtherInService {
         }
         // P0-2：按单据整体冲销，同商品多行也只冲一次（DOC/31 §13.4）
         inventoryService.reverseByBill(head.getNo(), head.getId(), head.getBizDate());
-        head.setStatus("DRAFT");
+        // 状态 CAS：只有 CONFIRMED 能改回 DRAFT，并发撤回时第二个请求返回 40902
         head.setWithdrawnAt(new Date());
         head.setWithdrawnBy(currentUserId());
-        otherInMapper.updateById(head);
+        int rows = otherInMapper.update(null, new UpdateWrapper<ErpOtherIn>()
+            .eq("id", head.getId()).eq("status", "CONFIRMED")
+            .set("status", "DRAFT")
+            .set("withdrawn_at", head.getWithdrawnAt())
+            .set("withdrawn_by", head.getWithdrawnBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        head.setStatus("DRAFT");
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void voidBill(Long id) {
-        ErpOtherIn head = otherInMapper.selectById(id);
+        // 行锁：作废与撤回/确认共用单据头锁，避免并发路径交错
+        ErpOtherIn head = otherInMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("其他入库单不存在");
         }
@@ -256,10 +275,18 @@ public class ErpOtherInServiceImpl implements IErpOtherInService {
             withdraw(id);
         }
         head = otherInMapper.selectById(id);
-        head.setStatus("VOID");
         head.setVoidedAt(new Date());
         head.setVoidedBy(currentUserId());
-        otherInMapper.updateById(head);
+        // 状态 CAS：只有 DRAFT 能改成 VOID（撤回后必定落在 DRAFT）
+        int rows = otherInMapper.update(null, new UpdateWrapper<ErpOtherIn>()
+            .eq("id", head.getId()).eq("status", "DRAFT")
+            .set("status", "VOID")
+            .set("voided_at", head.getVoidedAt())
+            .set("voided_by", head.getVoidedBy()));
+        if (rows == 0) {
+            throw new ServiceException("单据状态已变更，请刷新后重试", 40902);
+        }
+        head.setStatus("VOID");
     }
 
     private Long currentUserId() {

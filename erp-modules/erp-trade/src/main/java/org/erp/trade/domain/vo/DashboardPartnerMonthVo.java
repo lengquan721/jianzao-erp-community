@@ -62,7 +62,7 @@ public class DashboardPartnerMonthVo {
     private BigDecimal purchaseAmount;
 
     /**
-     * 本月收款（客户口径）
+     * 本月收款（客户口径；negative=1 退款按负数）
      */
     private BigDecimal receiptAmount;
 

@@ -1,5 +1,7 @@
 package org.dromara.system.domain.bo;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonSetter;
 import io.github.linpeilie.annotations.AutoMapper;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -100,6 +102,15 @@ public class SysTenantBo extends BaseEntity {
      * 过期时间
      */
     private Date expireTime;
+
+    @JsonIgnore
+    private boolean expireTimeSpecified;
+
+    @JsonSetter("expireTime")
+    public void setExpireTime(Date expireTime) {
+        this.expireTime = expireTime;
+        this.expireTimeSpecified = true;
+    }
 
     /**
      * 用户数量（-1不限制）

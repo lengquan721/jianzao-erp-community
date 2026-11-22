@@ -4,6 +4,10 @@ import cn.hutool.core.lang.Dict;
 import cn.hutool.core.map.MapUtil;
 import cn.hutool.core.util.ArrayUtil;
 import cn.hutool.core.util.ObjectUtil;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -45,6 +49,13 @@ public class LogAspect {
      * 计时 key
      */
     private static final ThreadLocal<StopWatch> KEY_CACHE = new ThreadLocal<>();
+    private static final int MAX_LOG_PAYLOAD_CHARS = 2048;
+    private static final ObjectMapper LOG_SANITIZER_MAPPER = new ObjectMapper();
+    private static final Set<String> SENSITIVE_FIELDS = Set.of(
+        "password", "oldpassword", "newpassword", "confirmpassword", "pwd", "token", "accesstoken",
+        "refreshtoken", "authorization", "secret", "secretkey", "privatekey", "clientsecret",
+        "phone", "mobile", "taxno", "idcard", "email", "encrypt-key"
+    );
 
     /**
      * 处理请求前执行
@@ -140,7 +151,7 @@ public class LogAspect {
         }
         // 是否需要保存response，参数和值
         if (log.isSaveResponseData() && ObjectUtil.isNotNull(jsonResult)) {
-            operLog.setJsonResult(StringUtils.substring(JsonUtils.toJsonString(jsonResult), 0, 3800));
+            operLog.setJsonResult(StringUtils.substring(sanitizeJson(JsonUtils.toJsonString(jsonResult)), 0, MAX_LOG_PAYLOAD_CHARS));
         }
     }
 
@@ -155,11 +166,11 @@ public class LogAspect {
         String requestMethod = operLog.getRequestMethod();
         if (MapUtil.isEmpty(paramsMap) && StringUtils.equalsAny(requestMethod, HttpMethod.PUT.name(), HttpMethod.POST.name(), HttpMethod.DELETE.name())) {
             String params = argsArrayToString(joinPoint.getArgs(), excludeParamNames);
-            operLog.setOperParam(StringUtils.substring(params, 0, 3800));
+            operLog.setOperParam(StringUtils.substring(params, 0, MAX_LOG_PAYLOAD_CHARS));
         } else {
-            MapUtil.removeAny(paramsMap, SystemConstants.EXCLUDE_PROPERTIES);
-            MapUtil.removeAny(paramsMap, excludeParamNames);
-            operLog.setOperParam(StringUtils.substring(JsonUtils.toJsonString(paramsMap), 0, 3800));
+            String[] excluded = ArrayUtil.addAll(SystemConstants.EXCLUDE_PROPERTIES, excludeParamNames);
+            paramsMap.keySet().removeIf(name -> isExcludedField(name, excluded));
+            operLog.setOperParam(StringUtils.substring(sanitizeJson(JsonUtils.toJsonString(paramsMap)), 0, MAX_LOG_PAYLOAD_CHARS));
         }
     }
 
@@ -181,7 +192,7 @@ public class LogAspect {
                         String str1 = JsonUtils.toJsonString(obj);
                         Dict dict = JsonUtils.parseMap(str1);
                         if (MapUtil.isNotEmpty(dict)) {
-                            MapUtil.removeAny(dict, exclude);
+                            redactMap(dict, exclude);
                             list1.add(dict);
                         }
                     }
@@ -190,14 +201,74 @@ public class LogAspect {
                     str = JsonUtils.toJsonString(o);
                     Dict dict = JsonUtils.parseMap(str);
                     if (MapUtil.isNotEmpty(dict)) {
-                        MapUtil.removeAny(dict, exclude);
-                        str = JsonUtils.toJsonString(dict);
+                        redactMap(dict, exclude);
+                        str = sanitizeJson(JsonUtils.toJsonString(dict));
                     }
                 }
-                params.add(str);
+                params.add(sanitizeJson(str));
             }
         }
         return params.toString();
+    }
+
+    private String sanitizeJson(String json) {
+        if (json == null || json.length() > 100_000) {
+            return "[log omitted: payload too large]";
+        }
+        try {
+            JsonNode root = LOG_SANITIZER_MAPPER.readTree(json);
+            redactJson(root);
+            String sanitized = root == null ? "" : root.toString();
+            if (sanitized.length() <= MAX_LOG_PAYLOAD_CHARS) {
+                return sanitized;
+            }
+            String marker = "…[truncated]";
+            return sanitized.substring(0, MAX_LOG_PAYLOAD_CHARS - marker.length()) + marker;
+        } catch (Exception ignored) {
+            return "[log omitted: invalid or non-JSON payload]";
+        }
+    }
+
+    private void redactJson(JsonNode node) {
+        if (node instanceof ObjectNode objectNode) {
+            List<String> remove = new ArrayList<>();
+            objectNode.fieldNames().forEachRemaining(name -> {
+                if (isExcludedField(name, SystemConstants.EXCLUDE_PROPERTIES)) remove.add(name);
+            });
+            remove.forEach(objectNode::remove);
+            objectNode.elements().forEachRemaining(this::redactJson);
+        } else if (node instanceof ArrayNode arrayNode) {
+            arrayNode.forEach(this::redactJson);
+        }
+    }
+
+    private void redactMap(Map<?, ?> map, String[] excluded) {
+        List<Object> remove = new ArrayList<>();
+        for (Object key : map.keySet()) {
+            if (key instanceof String name && isExcludedField(name, excluded)) {
+                remove.add(key);
+            }
+        }
+        remove.forEach(map::remove);
+        for (Object value : map.values()) {
+            if (value instanceof Map<?, ?> nested) {
+                redactMap(nested, excluded);
+            } else if (value instanceof Collection<?> collection) {
+                for (Object child : collection) {
+                    if (child instanceof Map<?, ?> nested) redactMap(nested, excluded);
+                }
+            }
+        }
+    }
+
+    private boolean isExcludedField(String field, String[] excluded) {
+        if (field == null) return false;
+        String normalized = field.toLowerCase(Locale.ROOT);
+        if (SENSITIVE_FIELDS.contains(normalized)) return true;
+        for (String candidate : excluded) {
+            if (candidate != null && candidate.equalsIgnoreCase(field)) return true;
+        }
+        return false;
     }
 
     /**

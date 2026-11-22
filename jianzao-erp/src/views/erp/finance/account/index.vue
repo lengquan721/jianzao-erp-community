@@ -83,7 +83,13 @@
             </template>
           </t-table>
 
-          <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="getList" />
+          <pagination
+            v-show="total > 0"
+            v-model:page="queryParams.pageNum"
+            v-model:limit="queryParams.pageSize"
+            :total="total"
+            @pagination="getList"
+          />
         </div>
       </t-col>
     </t-row>
@@ -154,7 +160,13 @@
         </template>
         <template #amount="{ row }">{{ formatMoney(row.amount) }}</template>
       </t-table>
-      <pagination v-show="flowTotal > 0" v-model:page="flowQuery.pageNum" v-model:limit="flowQuery.pageSize" :total="flowTotal" @pagination="loadFlows" />
+      <pagination
+        v-show="flowTotal > 0"
+        v-model:page="flowQuery.pageNum"
+        v-model:limit="flowQuery.pageSize"
+        :total="flowTotal"
+        @pagination="loadFlows"
+      />
     </t-dialog>
   </div>
 </template>
@@ -248,8 +260,7 @@ mergeSavedWidths('finance-account/flows', flowColumns);
 
 const toDate = (value: string | undefined): string => (value ? String(value).slice(0, 10) : '-');
 
-const flowTypeLabel = (value: string): string =>
-  value === 'RECEIPT' ? '收款单' : value === 'PAYMENT' ? '付款单' : '其他收支';
+const flowTypeLabel = (value: string): string => (value === 'RECEIPT' ? '收款单' : value === 'PAYMENT' ? '付款单' : '其他收支');
 
 const getList = async () => {
   loading.value = true;

@@ -28,6 +28,11 @@ public class PrintTemplateVo {
 
     private String content;
 
+    /**
+     * 设计器组件树 JSON，前端据此还原可拖拽状态；空表示源码模式
+     */
+    private String schemaJson;
+
     private String paper;
 
     private Integer version;

@@ -58,7 +58,7 @@
 import { RoleVO } from '@/api/system/role/types';
 import { getAuthRole, updateAuthRole } from '@/api/system/user';
 import { UserForm } from '@/api/system/user/types';
-import { RouteLocationNormalized } from 'vue-router';
+import { RouteLocationRaw } from 'vue-router';
 import { parseTime } from '@/utils/ruoyi';
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 
@@ -111,17 +111,7 @@ const checkSelectable = (row: RoleVO): boolean => {
 };
 /** 关闭按钮 */
 const close = () => {
-  const obj: RouteLocationNormalized = {
-    fullPath: '',
-    hash: '',
-    matched: [],
-    meta: undefined,
-    name: undefined,
-    params: undefined,
-    query: undefined,
-    redirectedFrom: undefined,
-    path: '/system/user'
-  };
+  const obj: RouteLocationRaw = { path: '/system/user' };
   proxy?.$tab.closeOpenPage(obj);
 };
 /** 提交按钮 */

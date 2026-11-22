@@ -14,6 +14,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * 分页查询实体类
@@ -51,19 +52,27 @@ public class PageQuery implements Serializable {
      */
     public static final int DEFAULT_PAGE_NUM = 1;
 
-    /**
-     * 每页显示记录数 默认值 默认查全部
-     */
-    public static final int DEFAULT_PAGE_SIZE = Integer.MAX_VALUE;
+    /** Default page size for list endpoints. */
+    public static final int DEFAULT_PAGE_SIZE = 20;
+
+    /** Hard upper bound for interactive pagination; export APIs have their own limits. */
+    public static final int MAX_PAGE_SIZE = 200;
 
     /**
      * 构建分页对象
      */
     public <T> Page<T> build() {
+        return buildWithMaxPageSize(MAX_PAGE_SIZE);
+    }
+
+    protected <T> Page<T> buildWithMaxPageSize(int maxPageSize) {
         Integer pageNum = ObjectUtil.defaultIfNull(getPageNum(), DEFAULT_PAGE_NUM);
         Integer pageSize = ObjectUtil.defaultIfNull(getPageSize(), DEFAULT_PAGE_SIZE);
         if (pageNum <= 0) {
             pageNum = DEFAULT_PAGE_NUM;
+        }
+        if (pageSize <= 0 || pageSize > maxPageSize) {
+            throw new ServiceException("分页参数有误：每页数量必须在1到" + maxPageSize + "之间");
         }
         Page<T> page = new Page<>(pageNum, pageSize);
         List<OrderItem> orderItems = buildOrderItem();
@@ -71,6 +80,28 @@ public class PageQuery implements Serializable {
             page.addOrder(orderItems);
         }
         return page;
+    }
+
+    /** Fetch a separately bounded export through ordinary, maxLimit-compatible pages. */
+    public static <T> List<T> collectForExport(int exportLimit, Function<PageQuery, List<T>> fetchPage) {
+        if (exportLimit <= 0 || exportLimit > 5000) {
+            throw new ServiceException("导出数量必须在1到5000之间");
+        }
+        List<T> rows = new ArrayList<>(Math.min(exportLimit, MAX_PAGE_SIZE));
+        int pageNum = 1;
+        while (rows.size() < exportLimit) {
+            // Keep the page size fixed so a partial last page cannot move its SQL offset backwards.
+            List<T> pageRows = fetchPage.apply(new PageQuery(MAX_PAGE_SIZE, pageNum++));
+            if (pageRows == null || pageRows.isEmpty()) {
+                break;
+            }
+            int remaining = exportLimit - rows.size();
+            rows.addAll(pageRows.subList(0, Math.min(remaining, pageRows.size())));
+            if (pageRows.size() < MAX_PAGE_SIZE) {
+                break;
+            }
+        }
+        return rows;
     }
 
     /**
@@ -115,8 +146,10 @@ public class PageQuery implements Serializable {
     }
 
     @JsonIgnore
-    public Integer getFirstNum() {
-        return (pageNum - 1) * pageSize;
+    public long getFirstNum() {
+        long safePageNum = ObjectUtil.defaultIfNull(pageNum, DEFAULT_PAGE_NUM);
+        long safePageSize = ObjectUtil.defaultIfNull(pageSize, DEFAULT_PAGE_SIZE);
+        return Math.max(0L, safePageNum - 1L) * safePageSize;
     }
 
     public PageQuery(Integer pageSize, Integer pageNum) {

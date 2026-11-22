@@ -25,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -32,8 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -68,8 +71,22 @@ class ErpOtherOutServiceImplTest {
 
     private ErpOtherOutServiceImpl service;
 
+    /** CAS 状态写入记录（setUp 注册桩时填充） */
+    private List<String> casStatuses;
+
     @BeforeEach
     void setUp() {
+        casStatuses = new ArrayList<>();
+        lenient().when(otherOutMapper.update(isNull(), any(Wrapper.class))).thenAnswer(inv -> {
+            com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<ErpOtherOut> wrapper = inv.getArgument(1);
+            Object status = wrapper.getParamNameValuePairs().values().stream()
+                .filter(v -> v instanceof String && List.of("CONFIRMED", "DRAFT", "VOID").contains(v))
+                .findFirst().orElse(null);
+            if (status != null) {
+                casStatuses.add((String) status);
+            }
+            return 1;
+        });
         service = new ErpOtherOutServiceImpl(otherOutMapper, itemMapper, productMapper,
             inventoryService, warehouseService, costLedgerService, sequenceService);
         when(warehouseService.defaultWarehouseId()).thenReturn(1L);
@@ -87,12 +104,16 @@ class ErpOtherOutServiceImplTest {
     void confirm_snapshotsCost_outbounds_recordsLedger() {
         ErpOtherOut head = head("DRAFT");
         when(otherOutMapper.selectById(100L)).thenReturn(head);
+        when(otherOutMapper.lockById(100L)).thenReturn(head);
         when(itemMapper.selectList(any(Wrapper.class)))
             .thenReturn(List.of(itemRow("2", "0", "0")))
             .thenReturn(List.of(itemRow("2", "10.5000", "21.00")));
-        when(inventoryService.snapshotCost(301L)).thenReturn(new BigDecimal("10.5000"));
+        when(inventoryService.outbound(eq("OTHER_OUT"), any(), eq(100L), eq(301L), eq(1L),
+            eq(new BigDecimal("2")), eq("NONE"), eq((Long) null), any(), eq(0)))
+            .thenReturn(new BigDecimal("10.5000"));
 
         service.confirm(100L);
+        verify(inventoryService, never()).snapshotCost(any());
 
         InOrder inOrder = inOrder(inventoryService, costLedgerService);
         inOrder.verify(inventoryService).outbound(eq("OTHER_OUT"), eq("QT202610310001"), eq(100L),
@@ -106,8 +127,8 @@ class ErpOtherOutServiceImplTest {
     @Test
     void confirm_insufficientStock_propagates40901() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("DRAFT"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("DRAFT"));
         when(itemMapper.selectList(any(Wrapper.class))).thenReturn(List.of(itemRow("2", "0", "0")));
-        when(inventoryService.snapshotCost(301L)).thenReturn(BigDecimal.TEN);
         org.mockito.Mockito.doThrow(new ServiceException("库存不足，单据保存失败", 40901))
             .when(inventoryService).outbound(any(), any(), any(), any(), any(), any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
 
@@ -120,6 +141,7 @@ class ErpOtherOutServiceImplTest {
     void withdraw_reversesStock_andCostLedger() {
         ErpOtherOut head = head("CONFIRMED");
         when(otherOutMapper.selectById(100L)).thenReturn(head);
+        when(otherOutMapper.lockById(100L)).thenReturn(head);
 
         service.withdraw(100L);
 
@@ -134,18 +156,19 @@ class ErpOtherOutServiceImplTest {
     void voidConfirmed_firstWithdrawsThenVoids() {
         ErpOtherOut head = head("CONFIRMED");
         when(otherOutMapper.selectById(100L)).thenReturn(head);
+        when(otherOutMapper.lockById(100L)).thenReturn(head);
         when(itemMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
 
         service.voidBill(100L);
 
-        ArgumentCaptor<ErpOtherOut> captor = ArgumentCaptor.forClass(ErpOtherOut.class);
-        verify(otherOutMapper, org.mockito.Mockito.atLeastOnce()).updateById(captor.capture());
-        assertEquals("VOID", captor.getValue().getStatus());
+        List<String> statuses = captureCasStatus();
+        assertTrue(statuses.contains("VOID"), "期望 CAS 写入 VOID，实际: " + statuses);
     }
 
     @Test
     void voidAlreadyVoid_rejected() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("VOID"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("VOID"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(100L));
         assertTrue(ex.getMessage().contains("已作废"));
@@ -154,6 +177,7 @@ class ErpOtherOutServiceImplTest {
     @Test
     void voidDraft_rejectedWithDeleteHint() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("DRAFT"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("DRAFT"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.voidBill(100L));
         assertEquals(40902, ex.getCode());
@@ -163,6 +187,7 @@ class ErpOtherOutServiceImplTest {
     @Test
     void deleteDraft_deletesItemsAndHead() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("DRAFT"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("DRAFT"));
 
         service.deleteDraft(100L);
 
@@ -173,6 +198,7 @@ class ErpOtherOutServiceImplTest {
     @Test
     void deleteDraft_nonDraftRejected40902() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("CONFIRMED"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("CONFIRMED"));
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.deleteDraft(100L));
         assertEquals(40902, ex.getCode());
@@ -182,6 +208,7 @@ class ErpOtherOutServiceImplTest {
     @Test
     void update_confirmedRejected40902() {
         when(otherOutMapper.selectById(100L)).thenReturn(head("CONFIRMED"));
+        when(otherOutMapper.lockById(100L)).thenReturn(head("CONFIRMED"));
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.update(100L, bo()));
@@ -198,6 +225,14 @@ class ErpOtherOutServiceImplTest {
     }
 
     // ---------- 辅助 ----------
+
+    /**
+     * CAS 状态写入记录：update(null, UpdateWrapper) 带 status 条件更新，不再走 updateById。
+     * 桩在 setUp 中注册（casStatuses 由 setUp 初始化），测试只需断言其中出现过的状态。
+     */
+    private List<String> captureCasStatus() {
+        return casStatuses;
+    }
 
     private ErpOtherOutBo bo() {
         ErpOtherOutBo bo = new ErpOtherOutBo();

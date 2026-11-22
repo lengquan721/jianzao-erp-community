@@ -2,14 +2,15 @@ package org.erp.stock.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.erp.common.enums.StatusText;
 import org.erp.master.domain.ErpProduct;
 import org.erp.master.mapper.ErpProductMapper;
 import org.erp.master.service.IErpProductService;
 import org.erp.stock.domain.StOpening;
 import org.erp.stock.domain.bo.StOpeningBo;
+import org.erp.stock.domain.bo.StockPage;
 import org.erp.stock.domain.vo.StOpeningVo;
 import org.erp.stock.mapper.StOpeningMapper;
 import org.erp.stock.service.IInventoryService;
@@ -19,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
@@ -31,7 +31,6 @@ import java.util.List;
  * - confirm：对每行写 OPENING 入库流水（inbound），初始化 st_stock 快照，行状态锁定；
  * - unconfirm（v1 管理员）：reverse 回退 OPENING 流水 + D2 重放，行回 DRAFT。
  */
-@Slf4j
 @RequiredArgsConstructor
 @Service
 public class StOpeningServiceImpl implements IStOpeningService {
@@ -41,31 +40,33 @@ public class StOpeningServiceImpl implements IStOpeningService {
     private final IInventoryService inventoryService;
     private final IErpProductService productService;
 
+    private static final int EXPORT_LIMIT = 5000;
+
     @Override
-    public List<StOpeningVo> listAll(Long warehouseId) {
-        List<StOpening> rows = openingMapper.selectList(new LambdaQueryWrapper<StOpening>()
-            .eq(warehouseId != null, StOpening::getWarehouseId, warehouseId)
-            .orderByAsc(StOpening::getProductId));
-        List<StOpeningVo> result = new ArrayList<>();
-        for (StOpening row : rows) {
-            StOpeningVo vo = new StOpeningVo();
-            vo.setId(row.getId());
-            vo.setProductId(row.getProductId());
-            vo.setWarehouseId(row.getWarehouseId());
-            vo.setQty(row.getQty());
-            vo.setUnitCost(row.getUnitCost());
-            vo.setStatus(row.getStatus());
-            vo.setStatusText(StatusText.bill(row.getStatus()));
-            vo.setCreateTime(row.getCreateTime());
-            ErpProduct p = productMapper.selectById(row.getProductId());
-            if (p != null) {
-                vo.setProductCode(p.getCode());
-                vo.setProductName(p.getName());
-                vo.setQtyScale(p.getQtyScale());
-            }
-            result.add(vo);
+    @Transactional(readOnly = true)
+    public TableDataInfo<StOpeningVo> pageDetails(Long warehouseId, int pageNum, int pageSize) {
+        StockPage page = StockPage.of(pageNum, pageSize);
+        long total = openingMapper.countDetails(warehouseId);
+        List<StOpeningVo> rows = page.offset() >= total ? List.of()
+            : openingMapper.selectDetails(warehouseId, page.offset(), page.size());
+        fillStatus(rows);
+        return new TableDataInfo<>(rows, total);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StOpeningVo> listForExport(Long warehouseId) {
+        // 取上限+1 哨兵，超过拒绝；与 UI 的分页边界解耦，绝不只导出第一页。
+        List<StOpeningVo> rows = openingMapper.selectDetails(warehouseId, 0, EXPORT_LIMIT + 1);
+        if (rows.size() > EXPORT_LIMIT) {
+            throw new ServiceException("期初库存单次最多导出 5000 条，请按仓库筛选后重试", 400);
         }
-        return result;
+        fillStatus(rows);
+        return rows;
+    }
+
+    private void fillStatus(List<StOpeningVo> rows) {
+        rows.forEach(vo -> vo.setStatusText(StatusText.bill(vo.getStatus())));
     }
 
     @Override

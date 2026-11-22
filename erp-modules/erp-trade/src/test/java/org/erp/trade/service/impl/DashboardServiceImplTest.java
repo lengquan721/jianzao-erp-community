@@ -15,22 +15,33 @@ import org.erp.master.mapper.ErpCustomerMapper;
 import org.erp.master.mapper.ErpProductMapper;
 import org.erp.master.mapper.ErpSupplierMapper;
 import org.erp.stock.domain.ErpStock;
+import org.erp.stock.domain.vo.ErpStockAlertTopRow;
+import org.erp.stock.domain.vo.ErpStockSumVo;
+import org.erp.stock.mapper.ErpStockAlertMapper;
 import org.erp.stock.mapper.ErpStockMapper;
 import org.erp.trade.domain.ErpPurchase;
 import org.erp.trade.domain.ErpSale;
 import org.erp.trade.domain.vo.DashboardPartnerMonthVo;
 import org.erp.trade.domain.vo.DashboardPartnerRankVo;
+import org.erp.trade.domain.vo.DashboardStockAlertVo;
 import org.erp.trade.domain.vo.DashboardSummaryVo;
 import org.erp.trade.domain.vo.DashboardTrendVo;
+import org.erp.trade.domain.vo.DashboardAggregateVo;
+import org.erp.trade.mapper.DashboardAggregateMapper;
 import org.erp.trade.mapper.ErpPurchaseMapper;
 import org.erp.trade.mapper.ErpSaleMapper;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.tenant.helper.TenantHelper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -47,6 +58,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -74,18 +89,23 @@ class DashboardServiceImplTest {
     private ErpStockMapper stockMapper;
 
     @Mock
-    private org.erp.stock.mapper.ErpStockAlertMapper stockAlertMapper;
+    private ErpStockAlertMapper stockAlertMapper;
     @Mock
     private ErpProductMapper productMapper;
     @Mock
     private ErpCustomerMapper customerMapper;
     @Mock
     private ErpSupplierMapper supplierMapper;
+    @Mock
+    private DashboardAggregateMapper dashboardAggregateMapper;
 
+    private MockedStatic<TenantHelper> tenantMock;
     private DashboardServiceImpl service;
 
     @BeforeEach
     void setUp() {
+        tenantMock = mockStatic(TenantHelper.class);
+        tenantMock.when(TenantHelper::getTenantId).thenReturn("000000");
         // MyBatis-Plus Lambda wrapper 需要实体 TableInfo 缓存（纯单测无 Spring 环境）
         initTableInfo(ErpSale.class);
         initTableInfo(ErpPurchase.class);
@@ -97,19 +117,34 @@ class DashboardServiceImplTest {
         initTableInfo(ErpProduct.class);
         service = new DashboardServiceImpl(saleMapper, purchaseMapper,
             arApMapper, receiptMapper, paymentMapper, costLedgerMapper, stockMapper, stockAlertMapper, productMapper,
-            customerMapper, supplierMapper);
+            customerMapper, supplierMapper, dashboardAggregateMapper);
         lenient().when(saleMapper.selectList(any())).thenReturn(List.of());
         lenient().when(purchaseMapper.selectList(any())).thenReturn(List.of());
-        lenient().when(arApMapper.selectList(any())).thenReturn(List.of());
+        lenient().when(arApMapper.sumUnsettledByPartyType(any())).thenReturn(BigDecimal.ZERO);
         lenient().when(receiptMapper.selectList(any())).thenReturn(List.of());
         lenient().when(paymentMapper.selectList(any())).thenReturn(List.of());
         lenient().when(costLedgerMapper.selectList(any())).thenReturn(List.of());
-        lenient().when(stockMapper.selectList(any())).thenReturn(List.of());
+        ErpStockSumVo emptySum = new ErpStockSumVo();
+        emptySum.setQty(BigDecimal.ZERO);
+        emptySum.setAmount(BigDecimal.ZERO);
+        lenient().when(stockMapper.sumStockByProductType(any())).thenReturn(emptySum);
         lenient().when(productMapper.selectByIds(any())).thenReturn(List.of());
         lenient().when(saleMapper.selectCount(any())).thenReturn(0L);
         lenient().when(purchaseMapper.selectCount(any())).thenReturn(0L);
         lenient().when(receiptMapper.selectCount(any())).thenReturn(0L);
         lenient().when(paymentMapper.selectCount(any())).thenReturn(0L);
+        lenient().when(dashboardAggregateMapper.trendSales(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.trendReceipts(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.trendOtherCosts(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.rankCustomerSales(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.rankCustomerReceipts(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.rankSupplierPurchases(any(), any(), any())).thenReturn(List.of());
+        lenient().when(dashboardAggregateMapper.rankSupplierPayments(any(), any(), any())).thenReturn(List.of());
+    }
+
+    @AfterEach
+    void tearDown() {
+        tenantMock.close();
     }
 
     private Date date(int y, int m, int d) {
@@ -147,24 +182,12 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("未收/未付：VOID 台账排除，settled 正确扣减")
+    @DisplayName("未收/未付：按 party_type 聚合，VOID 由 SQL 排除")
     void unsettledExcludesVoid() {
-        FinArAp arOpen = new FinArAp();
-        arOpen.setPartyType("AR");
-        arOpen.setAmount(new BigDecimal("1000"));
-        arOpen.setSettledAmount(new BigDecimal("400"));
-        arOpen.setStatus("PARTIAL");
-        FinArAp arVoid = new FinArAp();
-        arVoid.setPartyType("AR");
-        arVoid.setAmount(new BigDecimal("999"));
-        arVoid.setSettledAmount(BigDecimal.ZERO);
-        arVoid.setStatus("VOID");
-        FinArAp apOpen = new FinArAp();
-        apOpen.setPartyType("AP");
-        apOpen.setAmount(new BigDecimal("500"));
-        apOpen.setSettledAmount(new BigDecimal("200"));
-        apOpen.setStatus("OPEN");
-        when(arApMapper.selectList(any())).thenReturn(List.of(arOpen, arVoid, apOpen));
+        // VOID 过滤与 settled 扣减已下推到 SQL（sumUnsettledByPartyType）：
+        // 此处只验证 service 把两路聚合结果正确地映射成未收/未付并保留两位小数。
+        when(arApMapper.sumUnsettledByPartyType("AR")).thenReturn(new BigDecimal("600"));
+        when(arApMapper.sumUnsettledByPartyType("AP")).thenReturn(new BigDecimal("300"));
 
         DashboardSummaryVo vo = service.summary();
         assertEquals(0, new BigDecimal("600.00").compareTo(vo.getUnreceived()));
@@ -174,22 +197,15 @@ class DashboardServiceImplTest {
     @Test
     @DisplayName("库存：成品/原料按 product type 划分，金额=Σqty×avg_cost")
     void stockSplitByProductType() {
-        ErpStock s1 = new ErpStock();
-        s1.setProductId(1L);
-        s1.setQty(new BigDecimal("10"));
-        s1.setAvgCost(new BigDecimal("26.417"));
-        ErpStock s2 = new ErpStock();
-        s2.setProductId(2L);
-        s2.setQty(new BigDecimal("125"));
-        s2.setAvgCost(new BigDecimal("10.5667"));
-        when(stockMapper.selectList(any())).thenReturn(List.of(s1, s2));
-        ErpProduct p1 = new ErpProduct();
-        p1.setId(1L);
-        p1.setType("PRODUCT");
-        ErpProduct p2 = new ErpProduct();
-        p2.setId(2L);
-        p2.setType("MATERIAL");
-        when(productMapper.selectByIds(any())).thenReturn(List.of(p1, p2));
+        // 聚合下推数据库：成品与原料各回一行（Σqty、Σqty×avg_cost）
+        ErpStockSumVo finished = new ErpStockSumVo();
+        finished.setQty(new BigDecimal("10"));
+        finished.setAmount(new BigDecimal("264.17"));
+        ErpStockSumVo material = new ErpStockSumVo();
+        material.setQty(new BigDecimal("125"));
+        material.setAmount(new BigDecimal("1320.84"));
+        when(stockMapper.sumStockByProductType("PRODUCT")).thenReturn(finished);
+        when(stockMapper.sumStockByProductType("MATERIAL")).thenReturn(material);
 
         DashboardSummaryVo vo = service.summary();
         assertEquals(0, new BigDecimal("10").compareTo(vo.getFinishedStockQty()));
@@ -198,17 +214,94 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("库存：产品字典缺失的类型不计入")
+    @DisplayName("库存：聚合无数据时按 0 处理")
     void stockSkipsUnknownProduct() {
-        ErpStock s = new ErpStock();
-        s.setProductId(99L);
-        s.setQty(new BigDecimal("10"));
-        s.setAvgCost(BigDecimal.ONE);
-        when(stockMapper.selectList(any())).thenReturn(List.of(s));
-        when(productMapper.selectByIds(any())).thenReturn(List.of());
+        // SQL 内已 coalesce，无数据时返回 qty=0、amount=0
+        ErpStockSumVo empty = new ErpStockSumVo();
+        empty.setQty(BigDecimal.ZERO);
+        empty.setAmount(BigDecimal.ZERO);
+        when(stockMapper.sumStockByProductType(any())).thenReturn(empty);
 
         DashboardSummaryVo vo = service.summary();
         assertEquals(0, BigDecimal.ZERO.compareTo(vo.getFinishedStockQty()));
+    }
+
+    @Test
+    @DisplayName("库存预警：单查每类前五，以窗口计数显示全量并保留顺序和缺口")
+    void stockAlertUsesTopFiveAndFullCounts() {
+        when(stockAlertMapper.selectTopAlerts(null, 5)).thenReturn(List.of(
+            topAlert("HIGH", 12L, 21L, "31.250", "21.250"),
+            topAlert("HIGH", 12L, 22L, "32.250", "21.250"),
+            topAlert("HIGH", 12L, 13L, "27.000", "17.000"),
+            topAlert("HIGH", 12L, 16L, "25.000", "15.000"),
+            topAlert("HIGH", 12L, 17L, "22.000", "12.000"),
+            topAlert("LOW", 9L, 31L, "0.000", "-14.500"),
+            topAlert("LOW", 9L, 32L, "2.000", "-14.500"),
+            topAlert("LOW", 9L, 23L, "1.000", "-12.000"),
+            topAlert("LOW", 9L, 14L, "2.800", "-8.200"),
+            topAlert("LOW", 9L, 15L, "3.000", "-7.000")));
+
+        DashboardStockAlertVo vo = service.stockAlert();
+
+        assertEquals(9L, vo.getLowCount());
+        assertEquals(12L, vo.getHighCount());
+        assertEquals(List.of(31L, 32L, 23L, 14L, 15L),
+            vo.getLowTop5().stream().map(DashboardStockAlertVo.Item::getProductId).toList());
+        assertEquals(List.of(21L, 22L, 13L, 16L, 17L),
+            vo.getHighTop5().stream().map(DashboardStockAlertVo.Item::getProductId).toList());
+        DashboardStockAlertVo.Item low = vo.getLowTop5().get(0);
+        assertEquals("商品-31", low.getProductName());
+        assertEquals(new BigDecimal("0.000"), low.getTotalQty());
+        assertEquals(new BigDecimal("-14.500"), low.getGap());
+        DashboardStockAlertVo.Item high = vo.getHighTop5().get(0);
+        assertEquals("商品-21", high.getProductName());
+        assertEquals(new BigDecimal("31.250"), high.getTotalQty());
+        assertEquals(new BigDecimal("21.250"), high.getGap());
+
+        verify(stockAlertMapper).selectTopAlerts(null, 5);
+        verifyNoMoreInteractions(stockAlertMapper);
+        verifyNoInteractions(saleMapper, purchaseMapper, arApMapper, receiptMapper, paymentMapper, costLedgerMapper,
+            stockMapper, productMapper, customerMapper, supplierMapper, dashboardAggregateMapper);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"LOW", "HIGH"})
+    @DisplayName("库存预警：仅一类命中时另一类计数为零、列表为空")
+    void stockAlertMissingTypeIsEmpty(String type) {
+        boolean high = "HIGH".equals(type);
+        when(stockAlertMapper.selectTopAlerts(null, 5)).thenReturn(List.of(
+            topAlert(type, 1L, 41L, "3.000", high ? "1.000" : "-1.000")));
+
+        DashboardStockAlertVo vo = service.stockAlert();
+
+        assertEquals(high ? 0L : 1L, vo.getLowCount());
+        assertEquals(high ? 1L : 0L, vo.getHighCount());
+        assertEquals(1, (high ? vo.getHighTop5() : vo.getLowTop5()).size());
+        assertTrue((high ? vo.getLowTop5() : vo.getHighTop5()).isEmpty());
+    }
+
+    @Test
+    @DisplayName("库存预警：无命中时两类计数均为零、列表均为空")
+    void stockAlertEmpty() {
+        when(stockAlertMapper.selectTopAlerts(null, 5)).thenReturn(List.of());
+
+        DashboardStockAlertVo vo = service.stockAlert();
+
+        assertEquals(0L, vo.getLowCount());
+        assertEquals(0L, vo.getHighCount());
+        assertTrue(vo.getLowTop5().isEmpty());
+        assertTrue(vo.getHighTop5().isEmpty());
+    }
+
+    private static ErpStockAlertTopRow topAlert(String type, long count, long id, String qty, String gap) {
+        ErpStockAlertTopRow row = new ErpStockAlertTopRow();
+        row.setAlertType(type);
+        row.setAlertCount(count);
+        row.setProductId(id);
+        row.setProductName("商品-" + id);
+        row.setTotalQty(new BigDecimal(qty));
+        row.setGap(new BigDecimal(gap));
+        return row;
     }
 
     @Test
@@ -230,6 +323,33 @@ class DashboardServiceImplTest {
         assertEquals("XS001", vo.getRecentDocs().get(2).getNo());
         assertEquals("SALE", vo.getRecentDocs().get(0).getType());
         assertEquals(0, new BigDecimal("200").compareTo(vo.getRecentDocs().get(0).getAmount()));
+    }
+
+    @Test
+    @DisplayName("最近单据：实际收款查询投影包含 negative，50 元退款展示为 -50")
+    void recentDocsRefundSelectsNegativeAndDisplaysNegativeAmount() {
+        when(receiptMapper.selectList(any())).thenAnswer(invocation -> {
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<FinReceipt> query = invocation.getArgument(0);
+            List<String> columns = java.util.Arrays.stream(query.getSqlSelect().split(","))
+                .map(String::strip).toList();
+            assertTrue(columns.contains("negative"), "退款方向必须在实际 SQL 投影中：" + query.getSqlSelect());
+
+            // 只模拟所选字段的映射；未选 negative 时不回填，不能用完整实体掩盖漏选。
+            FinReceipt projectedRefund = new FinReceipt();
+            projectedRefund.setNo("TK001");
+            projectedRefund.setAmount(new BigDecimal("50.00"));
+            projectedRefund.setNegative(columns.contains("negative") ? 1 : null);
+            return List.of(projectedRefund);
+        });
+
+        DashboardSummaryVo vo = service.summary();
+
+        assertEquals(1, vo.getRecentDocs().size());
+        DashboardSummaryVo.RecentDoc refund = vo.getRecentDocs().get(0);
+        assertEquals("TK001", refund.getNo());
+        assertEquals("RECEIPT", refund.getType());
+        assertEquals(new BigDecimal("-50.00"), refund.getAmount());
+        verify(receiptMapper).selectList(any());
     }
 
     @Test
@@ -289,10 +409,10 @@ class DashboardServiceImplTest {
     @Test
     @DisplayName("成本趋势：其他出库/其他支出台账按月分组（聚合只做月分组，ACTIVE 由查询条件保证）")
     void trendCostGroupsByMonth() {
-        FinCostLedger c1 = new FinCostLedger();
+        DashboardAggregateVo c1 = new DashboardAggregateVo();
+        c1.setMonth(LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM")));
         c1.setAmount(new BigDecimal("317.59"));
-        c1.setBizDate(currentMonthDate(5));
-        when(costLedgerMapper.selectList(any())).thenReturn(List.of(c1));
+        when(dashboardAggregateMapper.trendOtherCosts(any(), any(), any())).thenReturn(List.of(c1));
 
         DashboardTrendVo vo = service.trend(1);
         assertEquals(0, new BigDecimal("317.59").compareTo(vo.getCost().get(0)));
@@ -301,17 +421,16 @@ class DashboardServiceImplTest {
     @Test
     @DisplayName("成本趋势 = 销售出库成本 + 其他出库/其他支出，不含生产材料成本")
     void trendCostUsesSalesCostBasis() {
-        ErpSale s = new ErpSale();
-        s.setStatus("CONFIRMED");
-        s.setBizDate(currentMonthDate(5));
-        s.setTotalAmount(new BigDecimal("1000"));
-        s.setCostAmount(new BigDecimal("700"));
-        when(saleMapper.selectList(any())).thenReturn(List.of(s));
+        DashboardAggregateVo s = new DashboardAggregateVo();
+        s.setMonth(LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM")));
+        s.setAmount(new BigDecimal("1000"));
+        s.setCost(new BigDecimal("700"));
+        when(dashboardAggregateMapper.trendSales(any(), any(), any())).thenReturn(List.of(s));
 
-        FinCostLedger otherOut = new FinCostLedger();
+        DashboardAggregateVo otherOut = new DashboardAggregateVo();
+        otherOut.setMonth(s.getMonth());
         otherOut.setAmount(new BigDecimal("50"));
-        otherOut.setBizDate(currentMonthDate(6));
-        when(costLedgerMapper.selectList(any())).thenReturn(List.of(otherOut));
+        when(dashboardAggregateMapper.trendOtherCosts(any(), any(), any())).thenReturn(List.of(otherOut));
 
         DashboardTrendVo vo = service.trend(1);
         assertEquals(0, new BigDecimal("750.00").compareTo(vo.getCost().get(0)));
@@ -341,11 +460,10 @@ class DashboardServiceImplTest {
     @Test
     @DisplayName("本月销售毛利率 = Σgross_profit / Σtotal_amount × 100")
     void monthGrossMargin() {
-        // 第一次 selectList 取销售额，第二次取毛利
-        when(saleMapper.selectList(any())).thenReturn(
-            List.of(sale("XS001", date(2026, 10, 1), "10000", "0")),
-            List.of(sale("XS001", date(2026, 10, 1), "0", "2500"))
-        );
+        DashboardAggregateVo aggregate = new DashboardAggregateVo();
+        aggregate.setAmount(new BigDecimal("10000"));
+        aggregate.setGrossProfit(new BigDecimal("2500"));
+        when(dashboardAggregateMapper.monthSales(any(), any(), any())).thenReturn(aggregate);
 
         DashboardSummaryVo vo = service.summary();
         assertEquals(0, new BigDecimal("10000.00").compareTo(vo.getMonthSales()));
@@ -382,12 +500,20 @@ class DashboardServiceImplTest {
         sale.setTotalAmount(new BigDecimal("1000"));
         sale.setGrossProfit(new BigDecimal("300"));
         when(saleMapper.selectList(any())).thenReturn(List.of(sale));
+        DashboardAggregateVo salesAggregate = new DashboardAggregateVo();
+        salesAggregate.setAmount(new BigDecimal("1000"));
+        salesAggregate.setGrossProfit(new BigDecimal("300"));
+        salesAggregate.setDocCount(1L);
+        when(dashboardAggregateMapper.customerSales(any(), any(), any(), any())).thenReturn(salesAggregate);
 
         FinReceipt receipt = new FinReceipt();
         receipt.setNo("SK20261101001");
         receipt.setBizDate(currentMonthDate(8));
         receipt.setAmount(new BigDecimal("400"));
         when(receiptMapper.selectList(any())).thenReturn(List.of(receipt));
+        DashboardAggregateVo receiptAggregate = new DashboardAggregateVo();
+        receiptAggregate.setAmount(new BigDecimal("400"));
+        when(dashboardAggregateMapper.customerReceipts(any(), any(), any(), any())).thenReturn(receiptAggregate);
 
         DashboardPartnerMonthVo vo = service.partnerMonth("CUSTOMER", 7L);
         assertEquals("宏达建材", vo.getPartyName());
@@ -403,6 +529,29 @@ class DashboardServiceImplTest {
     }
 
     @Test
+    @DisplayName("退款方向：negative=1 的 50 元退款在客户报表中为 -50，不是收款 +50")
+    void partnerMonthNegativeReceiptIsSigned() {
+        ErpCustomer customer = new ErpCustomer();
+        customer.setId(7L);
+        customer.setName("客户");
+        when(customerMapper.selectById(7L)).thenReturn(customer);
+        FinReceipt refund = new FinReceipt();
+        refund.setNo("TK001");
+        refund.setBizDate(currentMonthDate(2));
+        refund.setAmount(new BigDecimal("50"));
+        refund.setNegative(1);
+        when(receiptMapper.selectList(any())).thenReturn(List.of(refund));
+        DashboardAggregateVo aggregate = new DashboardAggregateVo();
+        aggregate.setAmount(new BigDecimal("-50"));
+        when(dashboardAggregateMapper.customerReceipts(any(), any(), any(), any())).thenReturn(aggregate);
+
+        DashboardPartnerMonthVo vo = service.partnerMonth("CUSTOMER", 7L);
+
+        assertEquals(0, new BigDecimal("-50.00").compareTo(vo.getReceiptAmount()));
+        assertEquals(0, new BigDecimal("-50.00").compareTo(vo.getDocs().get(0).getAmount()));
+    }
+
+    @Test
     @DisplayName("往来单位当月明细：供货商口径统计本月采购与付款")
     void partnerMonthSupplier() {
         ErpSupplier supplier = new ErpSupplier();
@@ -415,12 +564,19 @@ class DashboardServiceImplTest {
         purchase.setBizDate(currentMonthDate(3));
         purchase.setTotalAmount(new BigDecimal("800"));
         when(purchaseMapper.selectList(any())).thenReturn(List.of(purchase));
+        DashboardAggregateVo purchaseAggregate = new DashboardAggregateVo();
+        purchaseAggregate.setAmount(new BigDecimal("800"));
+        purchaseAggregate.setDocCount(1L);
+        when(dashboardAggregateMapper.supplierPurchases(any(), any(), any(), any())).thenReturn(purchaseAggregate);
 
         FinPayment payment = new FinPayment();
         payment.setNo("FK20261101001");
         payment.setBizDate(currentMonthDate(9));
         payment.setAmount(new BigDecimal("300"));
         when(paymentMapper.selectList(any())).thenReturn(List.of(payment));
+        DashboardAggregateVo paymentAggregate = new DashboardAggregateVo();
+        paymentAggregate.setAmount(new BigDecimal("300"));
+        when(dashboardAggregateMapper.supplierPayments(any(), any(), any(), any())).thenReturn(paymentAggregate);
 
         DashboardPartnerMonthVo vo = service.partnerMonth("SUPPLIER", 9L);
         assertEquals("钢材供应商", vo.getPartyName());
@@ -474,11 +630,26 @@ class DashboardServiceImplTest {
         small.setTotalAmount(new BigDecimal("400"));
         small.setGrossProfit(new BigDecimal("100"));
         when(saleMapper.selectList(any())).thenReturn(List.of(big, small));
+        DashboardAggregateVo c1Aggregate = new DashboardAggregateVo();
+        c1Aggregate.setPartyId(7L);
+        c1Aggregate.setAmount(new BigDecimal("1000"));
+        c1Aggregate.setGrossProfit(new BigDecimal("300"));
+        c1Aggregate.setDocCount(1L);
+        DashboardAggregateVo c2Aggregate = new DashboardAggregateVo();
+        c2Aggregate.setPartyId(8L);
+        c2Aggregate.setAmount(new BigDecimal("400"));
+        c2Aggregate.setGrossProfit(new BigDecimal("100"));
+        c2Aggregate.setDocCount(1L);
+        when(dashboardAggregateMapper.rankCustomerSales(any(), any(), any())).thenReturn(List.of(c1Aggregate, c2Aggregate));
 
         FinReceipt receipt = new FinReceipt();
         receipt.setCustomerId(7L);
         receipt.setAmount(new BigDecimal("500"));
         when(receiptMapper.selectList(any())).thenReturn(List.of(receipt));
+        DashboardAggregateVo receiptAggregate = new DashboardAggregateVo();
+        receiptAggregate.setPartyId(7L);
+        receiptAggregate.setAmount(new BigDecimal("500"));
+        when(dashboardAggregateMapper.rankCustomerReceipts(any(), any(), any())).thenReturn(List.of(receiptAggregate));
 
         DashboardPartnerRankVo vo = service.partnerRank("CUSTOMER");
         assertEquals(2, vo.getItems().size());
@@ -511,6 +682,12 @@ class DashboardServiceImplTest {
         s2.setTotalAmount(new BigDecimal("200"));
         s2.setGrossProfit(new BigDecimal("70"));
         when(saleMapper.selectList(any())).thenReturn(List.of(s1, s2));
+        DashboardAggregateVo salesAggregate = new DashboardAggregateVo();
+        salesAggregate.setPartyId(7L);
+        salesAggregate.setAmount(new BigDecimal("300"));
+        salesAggregate.setGrossProfit(new BigDecimal("100"));
+        salesAggregate.setDocCount(2L);
+        when(dashboardAggregateMapper.rankCustomerSales(any(), any(), any())).thenReturn(List.of(salesAggregate));
 
         DashboardPartnerRankVo vo = service.partnerRank("CUSTOMER");
         assertEquals(1, vo.getItems().size());
@@ -532,11 +709,20 @@ class DashboardServiceImplTest {
         p1.setSupplierId(9L);
         p1.setTotalAmount(new BigDecimal("2220"));
         when(purchaseMapper.selectList(any())).thenReturn(List.of(p1));
+        DashboardAggregateVo purchasesAggregate = new DashboardAggregateVo();
+        purchasesAggregate.setPartyId(9L);
+        purchasesAggregate.setAmount(new BigDecimal("2220"));
+        purchasesAggregate.setDocCount(1L);
+        when(dashboardAggregateMapper.rankSupplierPurchases(any(), any(), any())).thenReturn(List.of(purchasesAggregate));
 
         FinPayment pay = new FinPayment();
         pay.setSupplierId(9L);
         pay.setAmount(new BigDecimal("300"));
         when(paymentMapper.selectList(any())).thenReturn(List.of(pay));
+        DashboardAggregateVo paymentsAggregate = new DashboardAggregateVo();
+        paymentsAggregate.setPartyId(9L);
+        paymentsAggregate.setAmount(new BigDecimal("300"));
+        when(dashboardAggregateMapper.rankSupplierPayments(any(), any(), any())).thenReturn(List.of(paymentsAggregate));
 
         DashboardPartnerRankVo vo = service.partnerRank("SUPPLIER");
         assertEquals(1, vo.getItems().size());
@@ -555,6 +741,10 @@ class DashboardServiceImplTest {
         receipt.setCustomerId(7L);
         receipt.setAmount(new BigDecimal("500"));
         when(receiptMapper.selectList(any())).thenReturn(List.of(receipt));
+        DashboardAggregateVo receiptAggregate = new DashboardAggregateVo();
+        receiptAggregate.setPartyId(7L);
+        receiptAggregate.setAmount(new BigDecimal("500"));
+        when(dashboardAggregateMapper.rankCustomerReceipts(any(), any(), any())).thenReturn(List.of(receiptAggregate));
 
         DashboardPartnerRankVo vo = service.partnerRank("CUSTOMER");
         assertEquals(1, vo.getItems().size());

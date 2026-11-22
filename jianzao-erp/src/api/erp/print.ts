@@ -1,9 +1,6 @@
 import request from '@/utils/request';
 import { AxiosPromise } from 'axios';
-import type {
-  PrintTemplateForm,
-  PrintTemplateVO
-} from './types';
+import type { PrintDesignMeta, PrintDesignSchema, PrintTemplateForm, PrintTemplateVO } from './types';
 
 /* ------------------------------ 打印模板 ------------------------------ */
 
@@ -105,4 +102,37 @@ export function renderReceipt(receiptId: string | number, params?: { templateId?
 /** 付款单渲染 */
 export function renderPayment(paymentId: string | number, params?: { templateId?: string | number }): AxiosPromise<string> {
   return renderPrint(`/erp/print/PAYMENT/${paymentId}`, params);
+}
+
+/* ------------------------------ 打印设计器 ------------------------------ */
+
+/** 设计器元数据：变量字典、表格数据源、可选列 */
+export function getPrintDesignMeta(scene: string): AxiosPromise<PrintDesignMeta> {
+  return request({ url: '/erp/print/design/variables', method: 'get', params: { scene } });
+}
+
+/** 预置版式：新建模板时的起点组件树 */
+export function getPrintPreset(scene: string): AxiosPromise<PrintDesignSchema> {
+  return request({ url: '/erp/print/design/presets', method: 'get', params: { scene } });
+}
+
+/**
+ * 预览设计器组件树：后端编译成 HTML 再用示例数据渲染
+ *
+ * body 传组件树 JSON 字符串，服务端编译 + 净化 + 渲染，前端不拼 HTML。
+ */
+export function previewPrintDesign(params: { scene: string; schemaJson: string; showProfit?: boolean }): AxiosPromise<string> {
+  return request({
+    url: '/erp/print/preview/design',
+    method: 'post',
+    params: {
+      scene: params.scene,
+      showProfit: params.showProfit ?? false
+    },
+    data: params.schemaJson,
+    headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+    responseType: 'text',
+    // 组件树里可能内嵌 base64 图片，体积远大于普通接口，默认 50s 容易在弱网下超时
+    timeout: 120000
+  });
 }

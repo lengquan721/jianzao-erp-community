@@ -47,7 +47,6 @@ public class FinPaymentController extends BaseController {
     @RepeatSubmit
     @PostMapping
     public R<FinPaymentVo> add(@Valid @RequestBody FinPaymentBo bo) {
-        // confirm=true 会在同一事务内直接核销往来，必须同时具备确认权限，避免仅新增权限绕过审核
         ConfirmPermission.check("erp:finance:payment:confirm", bo.getConfirm());
         return R.ok(paymentService.insert(bo));
     }

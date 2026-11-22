@@ -6,6 +6,7 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.erp.trade.domain.ErpPurchaseOrder;
 import org.erp.trade.domain.ErpPurchaseOrderItem;
 import org.erp.trade.domain.vo.ErpPurchaseOrderVo;
+import org.erp.trade.domain.vo.OrderExecutionAmountVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -88,16 +89,18 @@ public interface ErpPurchaseOrderMapper extends BaseMapperPlus<ErpPurchaseOrder,
                'RECEIPT'  as type,
                h.biz_date as bizDate,
                sum(i.qty) as qty,
+               h.total_amount as amount,
                h.status   as status
         from biz_purchase h
-        join biz_purchase_item i on i.order_id = h.id
+        join biz_purchase_item i on i.order_id = h.id and i.tenant_id = h.tenant_id
         where h.source_order_id = #{orderId}
-          and h.del_flag = '0'
-          and i.del_flag = '0'
+          and h.tenant_id = #{tenantId} and i.tenant_id = #{tenantId}
+          and h.del_flag = '0' and i.del_flag = '0'
           and i.source_order_item_id is not null
-        group by h.id, h.no, h.biz_date, h.status
+        group by h.id, h.no, h.biz_date, h.total_amount, h.status
         """)
-    List<ErpPurchaseOrderVo.ExecRecordVo> selectReceipts(@Param("orderId") Long orderId);
+    List<ErpPurchaseOrderVo.ExecRecordVo> selectReceipts(@Param("orderId") Long orderId,
+                                                         @Param("tenantId") String tenantId);
 
     /**
      * 订单关联的采购退货单执行记录（退货行 → 入库行 → 入库头两跳）。
@@ -111,17 +114,47 @@ public interface ErpPurchaseOrderMapper extends BaseMapperPlus<ErpPurchaseOrder,
                'RETURN'    as type,
                rh.biz_date as bizDate,
                sum(r.qty)  as qty,
+               -rh.total_amount as amount,
                rh.status   as status
         from biz_purchase_return_item r
-        join biz_purchase_return rh on rh.id = r.order_id
-        join biz_purchase_item i on i.id = r.purchase_item_id
-        join biz_purchase h on h.id = i.order_id
+        join biz_purchase_return rh on rh.id = r.order_id and rh.tenant_id = r.tenant_id
+        join biz_purchase_item i on i.id = r.purchase_item_id and i.tenant_id = r.tenant_id
+        join biz_purchase h on h.id = i.order_id and h.tenant_id = i.tenant_id
         where h.source_order_id = #{orderId}
-          and rh.del_flag = '0'
-          and r.del_flag = '0'
-          and i.del_flag = '0'
+          and h.tenant_id = #{tenantId} and i.tenant_id = #{tenantId}
+          and rh.tenant_id = #{tenantId} and r.tenant_id = #{tenantId}
+          and rh.purchase_id = h.id
+          and h.del_flag = '0' and rh.del_flag = '0' and r.del_flag = '0' and i.del_flag = '0'
           and i.source_order_item_id is not null
-        group by rh.id, rh.no, rh.biz_date, rh.status
+        group by rh.id, rh.no, rh.biz_date, rh.total_amount, rh.status
         """)
-    List<ErpPurchaseOrderVo.ExecRecordVo> selectReturns(@Param("orderId") Long orderId);
+    List<ErpPurchaseOrderVo.ExecRecordVo> selectReturns(@Param("orderId") Long orderId,
+                                                        @Param("tenantId") String tenantId);
+
+    /**
+     * 批量汇总列表页执行金额：入库正数、退货负数；只处理当前页订单 ID。
+     */
+    @Select("""
+        <script>
+        select x.order_id as orderId, sum(x.amount) as amount
+        from (
+            select h.source_order_id as order_id, h.total_amount as amount
+            from biz_purchase h
+            where h.tenant_id = #{tenantId} and h.del_flag = '0' and h.status = 'CONFIRMED'
+              and h.source_order_id in
+              <foreach collection="orderIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            union all
+            select ph.source_order_id as order_id, -rh.total_amount as amount
+            from biz_purchase_return rh
+            join biz_purchase ph on ph.id = rh.purchase_id and ph.tenant_id = rh.tenant_id
+            where rh.tenant_id = #{tenantId} and ph.tenant_id = #{tenantId}
+              and rh.del_flag = '0' and ph.del_flag = '0' and rh.status = 'CONFIRMED'
+              and ph.source_order_id in
+              <foreach collection="orderIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        ) x
+        group by x.order_id
+        </script>
+        """)
+    List<OrderExecutionAmountVo> selectExecutionAmounts(@Param("orderIds") Collection<Long> orderIds,
+                                                         @Param("tenantId") String tenantId);
 }

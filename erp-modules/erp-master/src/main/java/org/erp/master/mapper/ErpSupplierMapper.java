@@ -4,12 +4,29 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.erp.master.domain.ErpSupplier;
+import org.erp.master.domain.bo.MasterOptionQuery;
 import org.erp.master.domain.vo.ErpSupplierVo;
+
+import java.util.List;
 
 /**
  * 供应商 Mapper
  */
 public interface ErpSupplierMapper extends BaseMapperPlus<ErpSupplier, ErpSupplierVo> {
+
+    String OPTION_SELECT = """
+        <script>
+        select m.id, m.code, m.name, m.contact, m.phone, m.address, m.opening_payable,
+               m.tax_no, m.tax_rate, m.status, m.remark, m.create_time
+        from md_supplier m
+        """;
+
+    @Select(OPTION_SELECT + MasterOptionSql.FILTER + MasterOptionSql.PARTY_SEARCH
+        + MasterOptionSql.ORDER_START + "m.id desc" + MasterOptionSql.LIMIT)
+    List<ErpSupplierVo> selectOptions(@Param("q") MasterOptionQuery query);
+
+    @Select(OPTION_SELECT + MasterOptionSql.IDS)
+    List<ErpSupplierVo> selectOptionsByIds(@Param("ids") List<Long> ids);
 
     /**
      * 按编码查询已逻辑删除的记录 ID（唯一键 tenant_id + code 不区分 del_flag）。

@@ -314,11 +314,24 @@ import { globalHeaders } from '@/utils/request';
 import { to } from 'await-to-js';
 import { optionselect } from '@/api/system/post';
 import { checkPermi } from '@/utils/permission';
+import { sanitizeImportMessage } from '@/utils/sanitizeImportMessage';
 import { useUserStore } from '@/store/modules/user';
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { DialogPlugin } from 'tdesign-vue-next';
 import type { DialogInstance, TNode, TreeNodeModel } from 'tdesign-vue-next';
-import { CheckCircleIcon, ChevronDownIcon, CloudUploadIcon, DeleteIcon, DownloadIcon, Edit1Icon, KeyIcon, PlusIcon, RefreshIcon, SearchIcon, UploadIcon } from 'tdesign-icons-vue-next';
+import {
+  CheckCircleIcon,
+  ChevronDownIcon,
+  CloudUploadIcon,
+  DeleteIcon,
+  DownloadIcon,
+  Edit1Icon,
+  KeyIcon,
+  PlusIcon,
+  RefreshIcon,
+  SearchIcon,
+  UploadIcon
+} from 'tdesign-icons-vue-next';
 
 const router = useRouter();
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
@@ -603,19 +616,18 @@ const importTemplate = () => {
 const handleFileUploadProgress = () => {
   upload.isUploading = true;
 };
-/** 文件上传成功处理：t-upload 回调给上下文对象，取 response.msg；导入结果含后端拼接的 <br/> 且需可滚动长列表，用 DialogPlugin 的 innerHTML TNode 等价保留原 HTML 富文本与滚动行为 */
+/** 文件上传成功处理：导入消息仅保留文本与 <br>，并保持结果列表可滚动。 */
 const handleFileSuccess = (ctx: any) => {
   const response = ctx?.response;
   upload.open = false;
   upload.isUploading = false;
   uploadFileList.value = [];
-  // 内容来自后端，EP 原本也走 innerHTML，等价迁移不新增风险；TNode 保留原可滚动 div 结构
+  // 账号和异常信息可能来自不可信输入，写入 HTML 前必须净化；保留原可滚动 div 结构。
   const body: TNode = (h) =>
     h('div', {
       style: 'overflow: auto;overflow-x: hidden;max-height: 70vh;padding: 10px 20px 0;',
-      innerHTML: response?.msg ?? ''
+      innerHTML: sanitizeImportMessage(response?.msg)
     });
-  let ins: DialogInstance;
   let dismissed = false;
   // 确定会连带触发 onConfirm 与 onClose，用标记保证只销毁一次
   const dismiss = () => {
@@ -624,7 +636,7 @@ const handleFileSuccess = (ctx: any) => {
     ins.hide();
     ins.destroy();
   };
-  ins = DialogPlugin.alert({
+  const ins: DialogInstance = DialogPlugin.alert({
     attach: 'body',
     header: '导入结果',
     body,
@@ -681,9 +693,7 @@ const handleUpdate = async (row?: UserForm) => {
   dialog.title = '修改用户';
   Object.assign(form.value, data.user);
   postOptions.value = data.posts;
-  roleOptions.value = Array.from(
-    new Map([...data.roles, ...data.user.roles].map(role => [role.roleId, role])).values()
-  );
+  roleOptions.value = Array.from(new Map([...data.roles, ...data.user.roles].map((role) => [role.roleId, role])).values());
   form.value.postIds = data.postIds;
   form.value.roleIds = data.roleIds;
   form.value.password = '';

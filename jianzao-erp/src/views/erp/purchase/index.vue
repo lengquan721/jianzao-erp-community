@@ -56,7 +56,7 @@
             :empty="'暂无采购入库单'"
             @column-resize-change="(ctx: any) => saveColumnWidths('purchase/list', ctx.columnsWidth)"
           >
-            <template #supplier="{ row }">{{ supplierName(row.supplierId, row.supplierName) }}</template>
+            <template #supplier="{ row }">{{ row.supplierName || '-' }}</template>
             <!-- 来源订单：直开单为空，转单生成的单据显示订单号并可跳订单详情（DOC/31 §10.4） -->
             <template #sourceOrder="{ row }">
               <t-button v-if="row.sourceOrderNo" variant="text" theme="primary" size="small" @click="goSourceOrder(row.sourceOrderId)">
@@ -83,7 +83,14 @@
                   </t-button>
                 </t-tooltip>
                 <t-tooltip v-if="row.status === 'DRAFT'" content="确认入库" placement="top">
-                  <t-button v-hasPermi="['erp:purchase:audit']" theme="success" variant="text" shape="square" size="small" @click="handleConfirm(row)">
+                  <t-button
+                    v-hasPermi="['erp:purchase:audit']"
+                    theme="success"
+                    variant="text"
+                    shape="square"
+                    size="small"
+                    @click="handleConfirm(row)"
+                  >
                     <template #icon><CheckCircleIcon /></template>
                   </t-button>
                 </t-tooltip>
@@ -154,7 +161,15 @@
             </t-col>
             <t-col :span="3">
               <t-form-item label="税率(%)" name="taxRate">
-                <t-input-number v-model="form.taxRate" :decimal-places="2" :min="0" :max="100" :allow-input-over-limit="false" theme="normal" style="width: 100%" />
+                <t-input-number
+                  v-model="form.taxRate"
+                  :decimal-places="2"
+                  :min="0"
+                  :max="100"
+                  :allow-input-over-limit="false"
+                  theme="normal"
+                  style="width: 100%"
+                />
               </t-form-item>
             </t-col>
           </t-row>
@@ -173,18 +188,9 @@
         </t-form>
 
         <!-- 新建时先选来源订单，出现「从订单带入」；已挂单的单据改为只读来源信息回显 -->
-        <div v-if="!form.id && !readonly" class="mb-3 mt-3 flex items-center gap-2">
+        <div v-if="!form.id && !readonly" class="mb-3 mt-3 flex flex-wrap items-center gap-2">
           <span class="shrink-0 erp-text-secondary">来源订单</span>
-          <t-select
-            v-model="form.sourceOrderId"
-            :loading="sourceOrderLoading"
-            clearable
-            filterable
-            placeholder="选择已确认的采购订单（可选）"
-            style="width: 320px"
-            :options="sourceOrderOptions"
-            @change="onSourceOrderChange"
-          />
+          <SourceOrderSelect v-if="dialog.visible" v-model="form.sourceOrderId" kind="purchase" @change="onSourceOrderChange" />
           <t-button v-if="form.sourceOrderId" theme="success" variant="outline" size="small" @click="openSourceItems">
             <template #icon><DownloadIcon /></template>
             从订单带入
@@ -402,26 +408,18 @@ import type {
   ErpPurchaseItemVO,
   ErpPurchaseOrderItemVO,
   ErpPurchaseOrderVO,
-  ErpPurchaseVO
+  ErpPurchaseVO,
+  ErpSaleOrderVO
 } from '@/api/erp/types';
-import { listPurchaseOpenItems, listPurchaseOrder } from '@/api/erp/order';
-import { supplierOptions } from '@/api/erp/master';
+import { listPurchaseOpenItems } from '@/api/erp/order';
+import SourceOrderSelect from '@/components/erp/SourceOrderSelect.vue';
 import { formatMoney, formatQtyTrim, normalizeQty, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import PartnerSelect from '@/components/erp/PartnerSelect.vue';
 import ProductSelect from '@/components/erp/ProductSelect.vue';
 import StatusTag from '@/components/erp/StatusTag.vue';
-import {
-  BrowseIcon,
-  CheckCircleIcon,
-  CloseCircleIcon,
-  DeleteIcon,
-  DownloadIcon,
-  Edit1Icon,
-  PlusIcon,
-  RollbackIcon
-} from 'tdesign-icons-vue-next';
+import { BrowseIcon, CheckCircleIcon, CloseCircleIcon, DeleteIcon, DownloadIcon, Edit1Icon, PlusIcon, RollbackIcon } from 'tdesign-icons-vue-next';
 
 interface PurchaseRow {
   productId?: ErpId;
@@ -549,7 +547,6 @@ const total = ref(0);
 const purchaseFormRef = ref<any>();
 /** 查询表单：已换 t-form，ref 提供 reset()（EP 是 resetFields()） */
 const queryFormRef = ref<any>();
-const supplierNameMap = ref<Record<string, string>>({});
 
 const dialog = reactive<DialogOption>({
   visible: false,
@@ -565,13 +562,6 @@ const dialogStatusText = ref('');
 
 const rows = ref<PurchaseRow[]>([]);
 
-/** 新建时可选的来源订单（仅 CONFIRMED） */
-const sourceOrders = ref<ErpPurchaseOrderVO[]>([]);
-const sourceOrderLoading = ref(false);
-/** 来源订单下拉：t-select 需要 { label, value }，标签沿用「单号（供应商）」 */
-const sourceOrderOptions = computed(() =>
-  sourceOrders.value.map((item) => ({ label: `${item.no ?? ''}（${item.supplierName || '供应商'}）`, value: item.id }))
-);
 /** 从订单带入弹窗 */
 const openItemState = reactive({ visible: false, loading: false, list: [] as OpenItemRow[] });
 
@@ -635,11 +625,6 @@ const formatCost = (value: number | undefined | null): string => {
   return Number.isFinite(n) ? n.toFixed(4) : '0.0000';
 };
 
-const supplierName = (supplierId: ErpId | undefined, fallback?: string): string => {
-  if (fallback) return fallback;
-  return supplierNameMap.value[String(supplierId ?? '')] ?? '-';
-};
-
 /**
  * 行金额：数量 × 单价，两位小数 HALF_UP（纯展示反馈，不与后端口径冲突）
  */
@@ -681,20 +666,6 @@ const getList = async () => {
   }
 };
 
-/** 加载供应商名称用于列表展示 */
-const loadSupplierNames = async () => {
-  try {
-    const res = await supplierOptions();
-    const map: Record<string, string> = {};
-    (res.data ?? []).forEach((item) => {
-      map[String(item.id)] = item.name;
-    });
-    supplierNameMap.value = map;
-  } catch {
-    supplierNameMap.value = {};
-  }
-};
-
 /** 搜索按钮操作 */
 const handleQuery = () => {
   queryParams.pageNum = 1;
@@ -729,7 +700,6 @@ const resetForm = async () => {
   Object.assign(form, createForm());
   rows.value = [createRow()];
   serverRows.value = [];
-  sourceOrders.value = [];
   openItemState.visible = false;
   openItemState.list = [];
   activeRowIndex.value = 0;
@@ -745,31 +715,15 @@ const handleAdd = async () => {
   await resetForm();
   dialog.visible = true;
   dialog.title = '新增采购入库单';
-  void loadSourceOrders();
 };
 
-/**
- * 拉取可挂单的采购订单：只列 CONFIRMED（DOC/31 §10.4）
- */
-const loadSourceOrders = async () => {
-  sourceOrderLoading.value = true;
-  try {
-    const res = await listPurchaseOrder({ pageNum: 1, pageSize: 200, status: 'CONFIRMED' });
-    sourceOrders.value = res.rows ?? [];
-  } catch {
-    sourceOrders.value = [];
-  } finally {
-    sourceOrderLoading.value = false;
-  }
-};
-
-/** 切换来源订单：同步供应商与订单号快照，旧带入行不再属于该订单，整批清掉 */
-const onSourceOrderChange = (orderId?: ErpId) => {
-  const order = sourceOrders.value.find((item) => String(item.id) === String(orderId ?? ''));
-  // 清空时 Element Plus 可能回传空串，统一归一成 undefined，避免请求体出现空来源
-  form.sourceOrderId = orderId || undefined;
+/** 选中一条服务端过滤/分页订单时，沿用其供应商和单号快照。 */
+const onSourceOrderChange = (order?: ErpPurchaseOrderVO | ErpSaleOrderVO) => {
+  if (order && !('supplierId' in order)) return;
   form.sourceOrderNo = order?.no;
-  if (order) form.supplierId = order.supplierId;
+  if (order && 'supplierId' in order) form.supplierId = order.supplierId;
+  openItemState.visible = false;
+  openItemState.list = [];
   rows.value = [createRow()];
   serverRows.value = [];
   activeRowIndex.value = 0;
@@ -1206,7 +1160,6 @@ const consumeRouteQuery = async () => {
 };
 
 onMounted(async () => {
-  await loadSupplierNames();
   if (route.query.keyword || route.query.id) {
     await consumeRouteQuery();
   } else {

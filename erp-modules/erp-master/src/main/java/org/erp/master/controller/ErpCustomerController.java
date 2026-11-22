@@ -12,6 +12,10 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
+import org.erp.master.domain.bo.MasterOptionIdsBo;
+import org.erp.master.domain.bo.MasterOptionQuery;
+import org.erp.master.domain.vo.MasterOptionPageVo;
+import org.erp.master.service.MasterOptionService;
 import org.erp.master.domain.bo.ErpCustomerBo;
 import org.erp.master.domain.vo.ErpCustomerVo;
 import org.erp.master.excel.CustomerExcelService;
@@ -35,6 +39,7 @@ public class ErpCustomerController extends BaseController {
 
     private final IErpCustomerService customerService;
     private final CustomerExcelService excelService;
+    private final MasterOptionService optionService;
 
     @SaCheckPermission("erp:master:customer:list")
     @GetMapping("/list")
@@ -52,8 +57,18 @@ public class ErpCustomerController extends BaseController {
 
     @SaCheckPermission("erp:master:customer:query")
     @GetMapping("/options")
-    public R<List<ErpCustomerVo>> options(@RequestParam(required = false) String keyword) {
-        return R.ok(customerService.selectList(keyword));
+    public R<MasterOptionPageVo<ErpCustomerVo>> options(@RequestParam(required = false) String keyword,
+                                                       @RequestParam(required = false) String code,
+                                                       @RequestParam(required = false) Integer status,
+                                                       @RequestParam int pageNum,
+                                                       @RequestParam(defaultValue = MasterOptionQuery.DEFAULT_SIZE) int pageSize) {
+        return R.ok(optionService.customers(MasterOptionQuery.of(keyword, code, status, pageNum, pageSize)));
+    }
+
+    @SaCheckPermission("erp:master:customer:query")
+    @PostMapping("/options/by-ids")
+    public R<List<ErpCustomerVo>> optionsByIds(@RequestBody MasterOptionIdsBo request) {
+        return R.ok(optionService.customersByIds(request.ids()));
     }
 
     @SaCheckPermission("erp:master:customer:add")

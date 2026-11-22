@@ -12,6 +12,10 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
+import org.erp.master.domain.bo.MasterOptionIdsBo;
+import org.erp.master.domain.bo.MasterOptionQuery;
+import org.erp.master.domain.vo.MasterOptionPageVo;
+import org.erp.master.service.MasterOptionService;
 import org.erp.master.domain.bo.ErpSupplierBo;
 import org.erp.master.domain.vo.ErpSupplierVo;
 import org.erp.master.excel.SupplierExcelService;
@@ -35,6 +39,7 @@ public class ErpSupplierController extends BaseController {
 
     private final IErpSupplierService supplierService;
     private final SupplierExcelService excelService;
+    private final MasterOptionService optionService;
 
     @SaCheckPermission("erp:master:supplier:list")
     @GetMapping("/list")
@@ -52,8 +57,18 @@ public class ErpSupplierController extends BaseController {
 
     @SaCheckPermission("erp:master:supplier:query")
     @GetMapping("/options")
-    public R<List<ErpSupplierVo>> options(@RequestParam(required = false) String keyword) {
-        return R.ok(supplierService.selectList(keyword));
+    public R<MasterOptionPageVo<ErpSupplierVo>> options(@RequestParam(required = false) String keyword,
+                                                       @RequestParam(required = false) String code,
+                                                       @RequestParam(required = false) Integer status,
+                                                       @RequestParam int pageNum,
+                                                       @RequestParam(defaultValue = MasterOptionQuery.DEFAULT_SIZE) int pageSize) {
+        return R.ok(optionService.suppliers(MasterOptionQuery.of(keyword, code, status, pageNum, pageSize)));
+    }
+
+    @SaCheckPermission("erp:master:supplier:query")
+    @PostMapping("/options/by-ids")
+    public R<List<ErpSupplierVo>> optionsByIds(@RequestBody MasterOptionIdsBo request) {
+        return R.ok(optionService.suppliersByIds(request.ids()));
     }
 
     @SaCheckPermission("erp:master:supplier:add")

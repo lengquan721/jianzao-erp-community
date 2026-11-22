@@ -3,7 +3,7 @@
 import type * as td from 'tdesign-vue-next';
 
 declare global {
-  declare type ElTagType = 'primary' | 'success' | 'info' | 'warning' | 'danger';
+  declare type ElTagType = '' | 'default' | 'primary' | 'success' | 'info' | 'warning' | 'danger';
   declare type ElFormInstance = td.FormInstanceFunctions;
   declare type ElTableInstance = td.TableInstanceFunctions;
   declare type ElUploadInstance = td.UploadInstanceFunctions;

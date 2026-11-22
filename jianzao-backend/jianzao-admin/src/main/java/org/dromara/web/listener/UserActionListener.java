@@ -63,6 +63,8 @@ public class UserActionListener implements SaTokenListener {
             } else {
                 RedisUtils.setCacheObject(CacheConstants.ONLINE_TOKEN_KEY + tokenValue, dto, Duration.ofSeconds(loginParameter.getTimeout()));
             }
+            // 登录成功后的用户更新必须沿用显式租户上下文，否则租户拦截器会拒绝 sys_user 更新。
+            loginService.recordLoginInfo((Long) loginParameter.getExtra(LoginHelper.USER_KEY), ip);
         });
         // 记录登录日志
         LogininforEvent logininforEvent = new LogininforEvent();
@@ -72,8 +74,6 @@ public class UserActionListener implements SaTokenListener {
         logininforEvent.setMessage(MessageUtils.message("user.login.success"));
         logininforEvent.setRequest(ServletUtils.getRequest());
         SpringUtils.context().publishEvent(logininforEvent);
-        // 更新登录信息
-        loginService.recordLoginInfo((Long) loginParameter.getExtra(LoginHelper.USER_KEY), ip);
         log.info("user doLogin, userId:{}, token:***{}", loginId, StringUtils.right(tokenValue, 8));
     }
 

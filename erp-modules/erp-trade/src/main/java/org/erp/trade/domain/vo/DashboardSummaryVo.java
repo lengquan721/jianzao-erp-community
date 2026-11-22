@@ -51,7 +51,7 @@ public class DashboardSummaryVo {
     private BigDecimal monthPurchaseAmount;
 
     /**
-     * 本月收款（fin_receipt CONFIRMED 按月 amount 合计）
+     * 本月收款（fin_receipt CONFIRMED 按月带符号合计；negative=1 退款按 -amount）
      */
     private BigDecimal monthReceiptAmount;
 

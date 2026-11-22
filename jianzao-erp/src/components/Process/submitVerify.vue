@@ -1,12 +1,5 @@
 <template>
-  <t-dialog
-    v-model:visible="dialog.visible"
-    width="50%"
-    draggable
-    attach="body"
-    :close-on-overlay-click="false"
-    @close="cancel"
-  >
+  <t-dialog v-model:visible="dialog.visible" width="50%" draggable attach="body" :close-on-overlay-click="false" @close="cancel">
     <template #header>{{ dialog.title }}</template>
     <t-form v-loading="loading" :data="form" label-width="120px">
       <t-form-item label="消息提醒">
@@ -103,13 +96,7 @@
     ></UserSelect>
 
     <!-- 驳回开始 -->
-    <t-dialog
-      v-model:visible="backVisible"
-      width="40%"
-      draggable
-      attach="body"
-      :close-on-overlay-click="false"
-    >
+    <t-dialog v-model:visible="backVisible" width="40%" draggable attach="body" :close-on-overlay-click="false">
       <template #header>驳回</template>
       <t-form v-if="task.flowStatus === 'waiting'" v-loading="backLoading" :data="backForm" label-width="120px">
         <t-form-item label="驳回节点">
@@ -141,17 +128,19 @@
       </template>
     </t-dialog>
     <!-- 驳回结束 -->
-    <t-dialog
-      v-model:visible="deleteSignatureVisible"
-      width="700px"
-      draggable
-      attach="body"
-      :footer="false"
-      :close-on-overlay-click="false"
-    >
+    <t-dialog v-model:visible="deleteSignatureVisible" width="700px" draggable attach="body" :footer="false" :close-on-overlay-click="false">
       <template #header>减签人员</template>
       <div>
-        <t-table class="erp-table" :data="deleteUserList" :columns="deleteUserColumns" :resizable="true" row-key="userId" bordered size="small" cell-empty-content="-">
+        <t-table
+          class="erp-table"
+          :data="deleteUserList"
+          :columns="deleteUserColumns"
+          :resizable="true"
+          row-key="userId"
+          bordered
+          size="small"
+          cell-empty-content="-"
+        >
           <template #operation="{ row }">
             <t-button theme="danger" size="small" @click="deleteMultiInstanceUser(row)">
               <template #icon><DeleteIcon /></template>
@@ -178,7 +167,7 @@ import {
   currentTaskAllUser,
   getNextNodeList
 } from '@/api/workflow/task';
-import UserSelect from '@/components/UserSelect';
+import UserSelect from '@/components/UserSelect/index.vue';
 
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
 import { FlowCopyVo, FlowTaskVO, TaskOperationBo } from '@/api/workflow/task/types';
@@ -224,9 +213,7 @@ const backButtonDisabled = ref(true);
 // 可驳回得任务节点
 const taskNodeList = ref([]);
 // el-option 列表改 t-select :options：nodeCode 作 value、nodeName 作 label
-const taskNodeOptions = computed(() =>
-  taskNodeList.value.map((item: any) => ({ label: item.nodeName, value: item.nodeCode }))
-);
+const taskNodeOptions = computed(() => taskNodeList.value.map((item: any) => ({ label: item.nodeName, value: item.nodeCode })));
 const nickName = ref({});
 //节点编码
 const nodeCode = ref<string>('');

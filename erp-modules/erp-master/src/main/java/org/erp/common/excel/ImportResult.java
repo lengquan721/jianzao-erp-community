@@ -15,6 +15,9 @@ public class ImportResult {
     private int success;
     private int skipped;
     private int failed;
+    private static final int MAX_ERROR_DETAILS = 100;
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 512;
+
     private final List<ImportError> errors = new ArrayList<>();
 
     public void success() {
@@ -30,12 +33,27 @@ public class ImportResult {
     public void fail(int row, String message) {
         total++;
         failed++;
-        errors.add(new ImportError(row, message));
+        if (errors.size() < MAX_ERROR_DETAILS) {
+            String safeMessage = message == null ? "导入失败" : message;
+            if (safeMessage.length() > MAX_ERROR_MESSAGE_LENGTH) {
+                safeMessage = safeMessage.substring(0, MAX_ERROR_MESSAGE_LENGTH) + "…";
+            }
+            errors.add(new ImportError(row, safeMessage));
+        }
     }
 
     public void failAll(int rowCount, String message) {
-        for (int row = 2; row < rowCount + 2; row++) {
-            fail(row, message);
+        int count = Math.max(rowCount, 0);
+        total += count;
+        failed += count;
+        int remaining = MAX_ERROR_DETAILS - errors.size();
+        for (int index = 0; index < Math.min(count, remaining); index++) {
+            int row = index + 2;
+            String safeMessage = message == null ? "导入失败" : message;
+            if (safeMessage.length() > MAX_ERROR_MESSAGE_LENGTH) {
+                safeMessage = safeMessage.substring(0, MAX_ERROR_MESSAGE_LENGTH) + "…";
+            }
+            errors.add(new ImportError(row, safeMessage));
         }
     }
 

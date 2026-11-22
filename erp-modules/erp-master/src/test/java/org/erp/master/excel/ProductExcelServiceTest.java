@@ -245,6 +245,20 @@ class ProductExcelServiceTest {
         assertEquals("2位", rows.get(0).getQtyScale());
     }
 
+    @Test
+    void overLimitImportIsRejectedBeforeAnyMapperOrServiceCall() {
+        List<ExcelRow<ProductImportRow>> rows = new java.util.ArrayList<>();
+        for (int index = 0; index < 2001; index++) {
+            rows.add(new ExcelRow<>(index + 2, new ProductImportRow()));
+        }
+
+        ImportResult result = excelService.importRows(rows, false);
+
+        assertEquals(2001, result.getFailed());
+        assertEquals(100, result.getErrors().size());
+        verifyNoInteractions(productService, categoryService, supplierService, productMapper);
+    }
+
     private ProductImportRow row(String type, String taxType) {
         ProductImportRow row = new ProductImportRow();
         row.setCode("P001");

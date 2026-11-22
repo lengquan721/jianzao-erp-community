@@ -51,19 +51,21 @@ class FinOpeningServiceImplTest {
     @Mock
     private IFinArApService arApService;
 
+    @Mock private org.erp.fin.service.IFinOpeningGuardService openingGuard;
     private FinOpeningServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new FinOpeningServiceImpl(openingMapper, customerMapper, supplierMapper, arApService);
+        service = new FinOpeningServiceImpl(openingMapper, customerMapper, supplierMapper, arApService, openingGuard);
         when(openingMapper.insert(any(FinOpening.class))).thenReturn(1);
-        when(openingMapper.updateById(any(FinOpening.class))).thenReturn(1);
-        when(openingMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(openingMapper.update(any(), any(Wrapper.class))).thenReturn(1);
+        when(openingMapper.selectByPartyForUpdate("AR", 9L)).thenReturn(null);
     }
 
     @Test
     void confirm_createsOpeningLedger_withOpeningDateAsBizDate() {
         FinOpening row = openingRow("DRAFT");
+        when(openingMapper.selectById(1L)).thenReturn(row);
         when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
 
         service.confirm(1L);
@@ -77,8 +79,22 @@ class FinOpeningServiceImplTest {
     }
 
     @Test
+    void confirm_createsOpeningLedger_andLocks() {
+        FinOpening row = openingRow("DRAFT");
+        when(openingMapper.selectById(1L)).thenReturn(row);
+        when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
+        service.confirm(1L);
+        verify(arApService).createOpening(eq("AR"), eq(9L), eq(new BigDecimal("2000.00")), eq(1L), any());
+        assertEquals("CONFIRMED", row.getStatus());
+        var order = org.mockito.Mockito.inOrder(openingGuard, openingMapper);
+        order.verify(openingGuard).lockParty("AR", 9L);
+        order.verify(openingMapper).selectByIdForUpdate(1L);
+    }
+
+    @Test
     void confirm_businessExistsBeforeOpeningDate_rejectedToAvoidDoubleCounting() {
         FinOpening row = openingRow("DRAFT");
+        when(openingMapper.selectById(1L)).thenReturn(row);
         when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
         when(arApService.countBusinessBefore(eq("AR"), eq(9L), any())).thenReturn(2L);
 
@@ -92,6 +108,7 @@ class FinOpeningServiceImplTest {
     void confirm_withoutOpeningDate_rejected() {
         FinOpening row = openingRow("DRAFT");
         row.setOpeningDate(null);
+        when(openingMapper.selectById(1L)).thenReturn(row);
         when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.confirm(1L));
@@ -102,7 +119,7 @@ class FinOpeningServiceImplTest {
     @Test
     void save_draft_persistsOpeningDate_andFlagsOverwrite() {
         FinOpening exist = openingRow("DRAFT");
-        when(openingMapper.selectOne(any(Wrapper.class))).thenReturn(exist);
+        when(openingMapper.selectByPartyForUpdate("AR", 9L)).thenReturn(exist);
 
         FinOpeningVo vo = service.save(bo("3000"));
 
@@ -122,7 +139,9 @@ class FinOpeningServiceImplTest {
 
     @Test
     void confirm_alreadyConfirmed_rejected40902() {
-        when(openingMapper.selectByIdForUpdate(1L)).thenReturn(openingRow("CONFIRMED"));
+        FinOpening row = openingRow("CONFIRMED");
+        when(openingMapper.selectById(1L)).thenReturn(row);
+        when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
 
         ServiceException ex = assertThrows(ServiceException.class, () -> service.confirm(1L));
         assertEquals(40902, ex.getCode());
@@ -131,6 +150,7 @@ class FinOpeningServiceImplTest {
     @Test
     void unconfirm_voidsOpeningLedger_backToDraft() {
         FinOpening row = openingRow("CONFIRMED");
+        when(openingMapper.selectById(1L)).thenReturn(row);
         when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
 
         service.unconfirm(1L);
@@ -142,6 +162,7 @@ class FinOpeningServiceImplTest {
     @Test
     void unconfirm_ledgerSettled_propagates40904() {
         FinOpening row = openingRow("CONFIRMED");
+        when(openingMapper.selectById(1L)).thenReturn(row);
         when(openingMapper.selectByIdForUpdate(1L)).thenReturn(row);
         org.mockito.Mockito.doThrow(new ServiceException("已核销的应收应付需先反核销", 40904))
             .when(arApService).voidBySource("OPENING", 1L);
@@ -154,7 +175,7 @@ class FinOpeningServiceImplTest {
     void save_confirmedRow_rejected40902() {
         FinOpening exist = new FinOpening();
         exist.setStatus("CONFIRMED");
-        when(openingMapper.selectOne(any(Wrapper.class))).thenReturn(exist);
+        when(openingMapper.selectByPartyForUpdate("AR", 9L)).thenReturn(exist);
 
         ServiceException ex = assertThrows(ServiceException.class, () ->
             service.save(bo("2000")));
@@ -164,11 +185,11 @@ class FinOpeningServiceImplTest {
     @Test
     void listAll_resolvesCustomerName() {
         FinOpening row = openingRow("DRAFT");
-        when(openingMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of(row));
+        when(openingMapper.selectReadRows("AR", 0, 5001)).thenReturn(java.util.List.of(row));
         ErpCustomer c = new ErpCustomer();
         c.setId(9L);
         c.setName("示例机械");
-        when(customerMapper.selectById(9L)).thenReturn(c);
+        when(customerMapper.selectByIds(java.util.List.of(9L))).thenReturn(java.util.List.of(c));
 
         var list = service.listAll("AR");
 

@@ -42,6 +42,8 @@ public class ErpSaleReturnVo {
 
     private BigDecimal refundAmount;
 
+    private Long refundAccountId;
+
     private Long refundReceiptId;
 
     private String remark;

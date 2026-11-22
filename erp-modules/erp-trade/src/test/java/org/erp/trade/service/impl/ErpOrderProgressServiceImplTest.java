@@ -37,7 +37,9 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -71,8 +73,13 @@ class ErpOrderProgressServiceImplTest {
     private final Map<Long, BigDecimal> executed = new HashMap<>();
     private final Map<Long, BigDecimal> returned = new HashMap<>();
     private final List<UpdateCall> updates = new ArrayList<>();
+    private final Map<Long, BigDecimal> storedExecuted = new HashMap<>();
+    private final Map<Long, BigDecimal> storedClosed = new HashMap<>();
+    private final List<String> groupedSqls = new ArrayList<>();
     private String headStatus;
     private BigDecimal overTol;
+    private java.sql.Date storedDueDate;
+    private String storedExecStatus;
 
     @BeforeEach
     void setUp() {
@@ -83,8 +90,13 @@ class ErpOrderProgressServiceImplTest {
         executed.clear();
         returned.clear();
         updates.clear();
+        storedExecuted.clear();
+        storedClosed.clear();
+        groupedSqls.clear();
         headStatus = "CONFIRMED";
         overTol = BigDecimal.ZERO;
+        storedDueDate = null;
+        storedExecStatus = null;
         stubJdbc();
     }
 
@@ -104,15 +116,11 @@ class ErpOrderProgressServiceImplTest {
         service.recalc(IErpOrderProgressService.TYPE_PURCHASE, ORDER_ID, null);
         service.recalc(IErpOrderProgressService.TYPE_PURCHASE, ORDER_ID, null);
 
-        // 三次都是「覆盖写」，行/头回写的参数签名必须完全一致（幂等）
+        // 首次修正时更新一次；随后两次结果完全相同，不重复 UPDATE 行或头。
         List<UpdateCall> itemWrites = itemUpdates();
         List<UpdateCall> headWrites = headUpdates();
-        assertEquals(3, itemWrites.size());
-        assertEquals(3, headWrites.size());
-        for (int i = 1; i < itemWrites.size(); i++) {
-            assertEquals(signature(itemWrites.get(0).values()), signature(itemWrites.get(i).values()));
-            assertEquals(signature(headWrites.get(0).values()), signature(headWrites.get(i).values()));
-        }
+        assertEquals(1, itemWrites.size());
+        assertEquals(1, headWrites.size());
         assertItemWrite(itemWrites.get(0).values(), "30", "0", 1L);
         assertHeadWrite(headWrites.get(0).values(), D7, "PARTIAL");
     }
@@ -232,8 +240,44 @@ class ErpOrderProgressServiceImplTest {
     }
 
     @Test
+    void recalc_缺少租户上下文拒绝且不回落默认租户() {
+        tenantMock.when(TenantHelper::getTenantId).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class,
+            () -> service.recalc(IErpOrderProgressService.TYPE_PURCHASE, ORDER_ID, null));
+
+        assertEquals(40901, ex.getCode());
+        verifyNoInteractions(jdbcTemplate);
+    }
+
+    @Test
+    void recalc_已变更行SQL带租户和软删条件() {
+        givenOrder("CONFIRMED", "0", item(1L, "100", "0", "0", 0, D7));
+        executed.put(1L, new BigDecimal("30"));
+
+        service.recalc(IErpOrderProgressService.TYPE_PURCHASE, ORDER_ID, null);
+
+        assertTrue(itemUpdates().get(0).sql().contains("tenant_id = ?"));
+        assertTrue(itemUpdates().get(0).sql().contains("del_flag = '0'"));
+        assertTrue(headUpdates().get(0).sql().contains("tenant_id = ?"));
+        assertTrue(headUpdates().get(0).sql().contains("del_flag = '0'"));
+    }
+
+    @Test
+    void recalc_结果未变化时不更新头行() {
+        givenOrder("CONFIRMED", "0", item(1L, "100", "0", "0", 0, D7));
+        storedDueDate = D7;
+        storedExecStatus = "NOT_STARTED";
+
+        service.recalc(IErpOrderProgressService.TYPE_PURCHASE, ORDER_ID, null);
+
+        verify(jdbcTemplate, never()).update(anyString(), any(), any(), any(), any());
+    }
+
+    @Test
     void recalc_采购与销售使用各自表名() {
         givenOrder("CONFIRMED", "0", item(1L, "10", "0", "0", 0, D7));
+        executed.put(1L, BigDecimal.ONE);
 
         service.recalc(IErpOrderProgressService.TYPE_SALE, ORDER_ID, null);
 
@@ -385,6 +429,12 @@ class ErpOrderProgressServiceImplTest {
         overTol = new BigDecimal(tolerance);
         items.clear();
         items.addAll(List.of(specs));
+        storedExecuted.clear();
+        storedClosed.clear();
+        for (ItemSpec spec : specs) {
+            storedExecuted.put(spec.id(), new BigDecimal(spec.executedQty()));
+            storedClosed.put(spec.id(), new BigDecimal(spec.closedQty()));
+        }
     }
 
     /**
@@ -428,7 +478,15 @@ class ErpOrderProgressServiceImplTest {
             } else {
                 values = Arrays.copyOfRange(raw, 1, raw.length);
             }
-            updates.add(new UpdateCall((String) raw[0], values));
+            String sql = (String) raw[0];
+            updates.add(new UpdateCall(sql, values));
+            if (sql.contains("executed_qty")) {
+                storedExecuted.put(((Number) values[2]).longValue(), (BigDecimal) values[0]);
+                storedClosed.put(((Number) values[2]).longValue(), (BigDecimal) values[1]);
+            } else if (sql.contains("exec_status")) {
+                storedDueDate = (java.sql.Date) values[0];
+                storedExecStatus = (String) values[1];
+            }
             return 1;
         }).when(jdbcTemplate).update(anyString(), any(), any(), any(), any());
     }
@@ -437,6 +495,8 @@ class ErpOrderProgressServiceImplTest {
         ResultSet rs = mock(ResultSet.class);
         when(rs.getString("status")).thenReturn(headStatus);
         when(rs.getBigDecimal("over_tol_pct")).thenReturn(overTol);
+        when(rs.getDate("due_date")).thenReturn(storedDueDate);
+        when(rs.getString("exec_status")).thenReturn(storedExecStatus);
         return rs;
     }
 
@@ -444,8 +504,8 @@ class ErpOrderProgressServiceImplTest {
         ResultSet rs = mock(ResultSet.class);
         when(rs.getLong("id")).thenReturn(spec.id());
         when(rs.getBigDecimal("qty")).thenReturn(new BigDecimal(spec.qty()));
-        when(rs.getBigDecimal("executed_qty")).thenReturn(new BigDecimal(spec.executedQty()));
-        when(rs.getBigDecimal("closed_qty")).thenReturn(new BigDecimal(spec.closedQty()));
+        when(rs.getBigDecimal("executed_qty")).thenReturn(storedExecuted.getOrDefault(spec.id(), new BigDecimal(spec.executedQty())));
+        when(rs.getBigDecimal("closed_qty")).thenReturn(storedClosed.getOrDefault(spec.id(), new BigDecimal(spec.closedQty())));
         when(rs.getInt("closed_flag")).thenReturn(spec.closedFlag());
         when(rs.getDate("due_date")).thenReturn(spec.dueDate());
         return rs;

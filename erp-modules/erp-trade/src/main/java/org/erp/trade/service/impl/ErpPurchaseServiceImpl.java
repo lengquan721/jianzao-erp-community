@@ -11,6 +11,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.common.sequence.SequenceService;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.master.domain.ErpProduct;
 import org.erp.master.domain.ErpSupplier;
 import org.erp.master.mapper.ErpProductMapper;
@@ -82,6 +83,7 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
     private final SequenceService sequenceService;
     private final IFinArApService finArApService;
     private final IErpOrderProgressService orderProgressService;
+    private final IFinOpeningGuardService openingGuardService;
 
     @Override
     public TableDataInfo<ErpPurchaseVo> selectPage(String keyword, Long supplierId, String status, PageQuery pageQuery) {
@@ -158,7 +160,15 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
         List<ErpPurchaseItem> items = itemMapper.selectList(new LambdaQueryWrapper<ErpPurchaseItem>()
             .eq(ErpPurchaseItem::getOrderId, orderId)
             .orderByAsc(ErpPurchaseItem::getId));
-        List<ErpPurchaseVo.ItemVo> result = new ArrayList<>();
+        List<Long> productIds = items.stream().map(ErpPurchaseItem::getProductId)
+            .filter(Objects::nonNull).filter(id -> id != 0L).distinct().toList();
+        Map<Long, ErpProduct> products = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            for (ErpProduct product : productMapper.selectByIds(productIds)) {
+                products.put(product.getId(), product);
+            }
+        }
+        List<ErpPurchaseVo.ItemVo> result = new ArrayList<>(items.size());
         for (ErpPurchaseItem row : items) {
             ErpPurchaseVo.ItemVo vo = new ErpPurchaseVo.ItemVo();
             vo.setId(row.getId());
@@ -174,7 +184,7 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
             vo.setFreightPerUnit(row.getFreightPerUnit());
             vo.setCostPrice(row.getCostPrice());
             vo.setRemark(row.getRemark());
-            ErpProduct p = productMapper.selectById(row.getProductId());
+            ErpProduct p = products.get(row.getProductId());
             if (p != null) {
                 vo.setProductCode(p.getCode());
                 vo.setProductName(p.getName());
@@ -350,8 +360,16 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
         BigDecimal taxRate = bo.getTaxRate() == null ? DEFAULT_TAX_RATE : bo.getTaxRate();
         List<ErpPurchaseVo.ItemVo> result = new ArrayList<>();
         List<BigDecimal> qtys = new ArrayList<>();
+        List<Long> productIds = bo.getItems().stream().map(ErpPurchaseBo.PurchaseItemBo::getProductId)
+            .filter(Objects::nonNull).distinct().toList();
+        Map<Long, ErpProduct> products = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            for (ErpProduct product : productMapper.selectByIds(productIds)) {
+                products.put(product.getId(), product);
+            }
+        }
         for (ErpPurchaseBo.PurchaseItemBo item : bo.getItems()) {
-            ErpProduct product = productMapper.selectById(item.getProductId());
+            ErpProduct product = products.get(item.getProductId());
             if (product == null) {
                 throw new ServiceException("产品不存在：" + item.getProductId());
             }
@@ -396,7 +414,7 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
     }
 
     private void confirmInternal(ErpPurchase head) {
-        // 加锁顺序（DOC/31 §6.8.1）：执行单头 → 订单头 → 订单行 → 台账 → 库存
+        // 第一把锁仍是执行单头（DOC/31 §6.8.1），保存并确认也从锁定行取值。
         head = purchaseMapper.lockById(head.getId());
         if (head == null) {
             throw new ServiceException("采购单不存在");
@@ -411,6 +429,8 @@ public class ErpPurchaseServiceImpl implements IErpPurchaseService {
         // 确认前校验整行集、行归属与超收容差（DOC/31 §5.4 改动点 3、§6.7）
         orderProgressService.lockAndValidate(IErpOrderProgressService.TYPE_PURCHASE, head.getSourceOrderId(),
             items.stream().map(row -> new IErpOrderProgressService.ExecLine(row.getSourceOrderItemId(), row.getQty())).toList());
+        // 沿用单头 → 订单头/行的顺序；在库存与台账写入前锁往来单位并校验期初。
+        openingGuardService.lockAndCheckBusinessDate("AP", head.getSupplierId(), head.getBizDate());
         // 再按 product_id 升序一次性锁齐库存行，避免两张单商品顺序相反时成环（§6.8.1 规则 3）
         inventoryService.lockStockRows(items.stream().map(ErpPurchaseItem::getProductId).toList());
         int seq = 0;

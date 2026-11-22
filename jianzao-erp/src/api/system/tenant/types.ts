@@ -11,7 +11,8 @@ export interface TenantVO extends BaseEntity {
   intro: string;
   remark: string;
   packageId: string | number;
-  expireTime: string;
+  /** 省略=不变，null=明确清空，字符串=新日期。 */
+  expireTime?: string | null;
   accountCount: number;
   status: string;
 }
@@ -57,7 +58,8 @@ export interface TenantForm {
   intro: string;
   remark: string;
   packageId: string | number;
-  expireTime: string;
+  /** 省略=不变，null=明确清空，字符串=新日期。 */
+  expireTime?: string | null;
   accountCount: number;
   status: string;
 }

@@ -6,13 +6,13 @@
         :key="tag.path"
         :data-path="tag.path"
         :class="{ 'active': isActive(tag), 'has-icon': tagsIcon }"
-        :to="{ path: tag.path ? tag.path : '', query: tag.query, fullPath: tag.fullPath ? tag.fullPath : '' }"
+        :to="tag.fullPath || { path: tag.path || '/', query: tag.query, hash: tag.hash }"
         class="tags-view-item"
         :style="activeStyle(tag)"
         @click.middle="!isAffix(tag) ? closeSelectedTag(tag) : ''"
         @contextmenu.prevent="openMenu(tag, $event)"
       >
-        <svg-icon v-if="tagsIcon && tag.meta && tag.meta.icon && tag.meta.icon !== '#'" :icon-class="tag.meta.icon"/>
+        <svg-icon v-if="tagsIcon && tag.meta && tag.meta.icon && tag.meta.icon !== '#'" :icon-class="tag.meta.icon" />
         <span class="tags-view-item-title">{{ tag.title }}</span>
         <span v-if="!isAffix(tag)" @click.prevent.stop="closeSelectedTag(tag)">
           <close style="width: 1em; height: 1em; vertical-align: middle" />
@@ -52,7 +52,7 @@ const router = useRouter();
 const visitedViews = computed(() => useTagsViewStore().getVisitedViews());
 const routes = computed(() => usePermissionStore().getRoutes());
 const theme = computed(() => useSettingsStore().theme);
-const tagsIcon = computed(() => useSettingsStore().tagsIcon)
+const tagsIcon = computed(() => useSettingsStore().tagsIcon);
 
 watch(route, () => {
   addTags();
@@ -180,7 +180,7 @@ const closeLeftTags = () => {
   });
 };
 const closeOthersTags = () => {
-  router.push(selectedTag.value).catch(() => {});
+  if (selectedTag.value) router.push(selectedTag.value.fullPath || selectedTag.value.path || '/').catch(() => {});
   proxy?.$tab.closeOtherPage(selectedTag.value).then(() => {
     moveToCurrentTag();
   });
@@ -246,7 +246,9 @@ onMounted(() => {
   border-top: none;
   border-bottom: 1px solid var(--td-border-level-1-color);
   box-shadow: none;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
 
   .tags-view-wrapper {
     .tags-view-item {
@@ -372,4 +374,3 @@ onMounted(() => {
   }
 }
 </style>
-

@@ -56,9 +56,7 @@
               <span class="text-xs erp-text-secondary mr-1">本月已收</span>
               <span class="font-semibold text-emerald-600 dark:text-emerald-400">¥{{ formatMoney(num(summary?.monthReceiptAmount)) }}</span>
             </div>
-            <span class="modern-kpi__link" @click.stop="go('/erp-finance/finance/receipt')">
-              收款明细 <ChevronRightIcon size="12px" />
-            </span>
+            <span class="modern-kpi__link" @click.stop="go('/erp-finance/finance/receipt')"> 收款明细 <ChevronRightIcon size="12px" /> </span>
           </div>
         </div>
       </t-col>
@@ -128,15 +126,15 @@
     <!-- 经营趋势：TDesign Starter 的 dashboard-chart-card 规范（无描边卡 + 标题/副标题 + #actions 筛选） -->
     <div class="erp-row-container">
       <t-card :bordered="false" class="erp-chart-card" title="经营趋势" subtitle="面积：销售额 / 成本 · 折线：收款 / 毛利 / 毛利率">
-      <template #actions>
-        <t-radio-group v-model="trendMonths" size="small" variant="default-filled" @change="loadTrend">
-          <t-radio-button :value="6">近 6 月</t-radio-button>
-          <t-radio-button :value="12">近 12 月</t-radio-button>
-        </t-radio-group>
-      </template>
-      <t-empty v-if="!trendMonthsList.length" description="暂无趋势数据" size="small" />
-      <div v-else ref="chartRef" class="chart-box"></div>
-    </t-card>
+        <template #actions>
+          <t-radio-group v-model="trendMonths" size="small" variant="default-filled" @change="loadTrend">
+            <t-radio-button :value="6">近 6 月</t-radio-button>
+            <t-radio-button :value="12">近 12 月</t-radio-button>
+          </t-radio-group>
+        </template>
+        <t-empty v-if="!trendMonthsList.length" description="暂无趋势数据" size="small" />
+        <div v-else ref="chartRef" class="chart-box"></div>
+      </t-card>
     </div>
 
     <!-- 最近单据 + 草稿待办（DOC/35 T0：与上半 KPI 卡统一为无描边表面） -->
@@ -636,7 +634,13 @@ const renderChart = () => {
         lineStyle: { width: 2.6, color: salesColor },
         areaStyle: { color: areaFill(salesColor) },
         /** 峰值直接标在点上，不用靠图例猜（TDesign Starter 的画法） */
-        markPoint: { symbol: 'circle', symbolSize: 9, data: [{ type: 'max', name: '峰值' }], itemStyle: { color: salesColor }, label: { show: false } }
+        markPoint: {
+          symbol: 'circle',
+          symbolSize: 9,
+          data: [{ type: 'max', name: '峰值' }],
+          itemStyle: { color: salesColor },
+          label: { show: false }
+        }
       },
       {
         name: '成本',

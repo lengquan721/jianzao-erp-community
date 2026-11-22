@@ -4,10 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.dromara.common.core.exception.ServiceException;
 import org.erp.fin.domain.FinArAp;
 import org.erp.fin.domain.FinSourceNo;
-import org.erp.fin.domain.vo.FinArApSourceVo;
+import org.erp.fin.domain.vo.FinArApSummaryVo;
 import org.erp.fin.mapper.FinArApMapper;
-import org.erp.fin.mapper.FinPaymentMapper;
-import org.erp.fin.mapper.FinReceiptMapper;
 import org.erp.fin.mapper.FinSourceNoMapper;
 import org.erp.master.domain.ErpCustomer;
 import org.erp.master.domain.ErpSupplier;
@@ -26,6 +24,7 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -33,7 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -55,19 +57,20 @@ class FinArApServiceImplTest {
     @Mock
     private FinSourceNoMapper sourceNoMapper;
     @Mock
-    private FinReceiptMapper receiptMapper;
-    @Mock
-    private FinPaymentMapper paymentMapper;
-    @Mock
     private ErpCustomerMapper customerMapper;
     @Mock
     private ErpSupplierMapper supplierMapper;
 
+    @Mock private org.erp.fin.mapper.FinOpeningMapper openingMapper;
+    @Mock private org.erp.fin.service.IFinOpeningGuardService openingGuard;
     private FinArApServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new FinArApServiceImpl(arApMapper, sourceNoMapper, receiptMapper, paymentMapper, customerMapper, supplierMapper);
+        var configuration = new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(
+            new org.apache.ibatis.builder.MapperBuilderAssistant(configuration, "fin-ar-ap-source-test"), FinArAp.class);
+        service = new FinArApServiceImpl(arApMapper, sourceNoMapper, customerMapper, supplierMapper, openingMapper, openingGuard);
         when(arApMapper.insert(any(FinArAp.class))).thenReturn(1);
         when(arApMapper.updateById(any(FinArAp.class))).thenReturn(1);
         when(arApMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
@@ -212,14 +215,14 @@ class FinArApServiceImplTest {
 
     @Test
     void summary_aggregatesTotalsAndParties() {
-        // 注：wrapper 的 .ne(VOID) 由 SQL 过滤，mock 桩只返回过滤后的行
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
-            arRow(1L, "AR", 9L, "SALE", 101L, "3000.00", "1000.00", "PARTIAL"),
-            arRow(2L, "AR", 9L, "OPENING", 301L, "2000.00", "0", "OPEN"),
-            arRow(3L, "AR", 10L, "SALE", 102L, "500.00", "500.00", "SETTLED")
+        // 数据库保留原口径：SALE 3000 + OPENING 2000 + SETTLED 500；不读全量台账到 Java。
+        when(arApMapper.selectSummaryTotals("AR")).thenReturn(totals("5500.00", "1500.00", "4000.00", "2000.00"));
+        when(arApMapper.selectSummaryParties("AR", 0, 5001)).thenReturn(List.of(
+            partySummary(9L, "5000.00", "1000.00", "4000.00", "2000.00"),
+            partySummary(10L, "500.00", "500.00", "0.00", "0.00")
         ));
-        when(customerMapper.selectById(9L)).thenReturn(customer(9L, "示例机械"));
-        when(customerMapper.selectById(10L)).thenReturn(customer(10L, "恒达设备"));
+        when(customerMapper.selectByIds(List.of(9L, 10L))).thenReturn(List.of(
+            customer(9L, "示例机械"), customer(10L, "恒达设备")));
 
         var vo = service.summary("AR");
 
@@ -237,6 +240,10 @@ class FinArApServiceImplTest {
         assertEquals(0, new BigDecimal("1000.00").compareTo(p9.getSettled()));
         assertEquals(0, new BigDecimal("4000.00").compareTo(p9.getUnsettled()));
         assertEquals(0, new BigDecimal("2000.00").compareTo(p9.getOpening()));
+        assertEquals("恒达设备", vo.getParties().get(1).getPartyName());
+        verify(customerMapper).selectByIds(List.of(9L, 10L));
+        verifyNoMoreInteractions(customerMapper);
+        verifyNoInteractions(supplierMapper);
     }
 
     @Test
@@ -247,22 +254,60 @@ class FinArApServiceImplTest {
 
     @Test
     void summary_ap_resolvesSupplierNames() {
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
-            arRow(1L, "AP", 8L, "PURCHASE", 201L, "1130.00", "0", "OPEN")
+        when(arApMapper.selectSummaryTotals("AP")).thenReturn(totals("1130.00", "0.00", "1130.00", "0.00"));
+        when(arApMapper.selectSummaryParties("AP", 0, 5001)).thenReturn(List.of(
+            partySummary(8L, "1130.00", "0.00", "1130.00", "0.00")
         ));
-        when(supplierMapper.selectById(8L)).thenReturn(supplier(8L, "钢材供应商"));
+        when(supplierMapper.selectByIds(List.of(8L))).thenReturn(List.of(supplier(8L, "钢材供应商")));
 
         var vo = service.summary("AP");
 
         assertEquals(1, vo.getParties().size());
         assertEquals("钢材供应商", vo.getParties().get(0).getPartyName());
+        verify(supplierMapper).selectByIds(List.of(8L));
+        verifyNoMoreInteractions(supplierMapper);
+        verifyNoInteractions(customerMapper);
+    }
+
+    @Test
+    void summary_201SuppliersUseOneBatchAndKeepMissingNamesAndMoneyScale() {
+        var parties = IntStream.rangeClosed(1, 201)
+            .mapToObj(id -> partySummary(id, "10.00", "1.00", "9.00", "0.00")).toList();
+        var ids = parties.stream().map(FinArApSummaryVo.PartySummary::getPartyId).toList();
+        var supplierRows = IntStream.rangeClosed(1, 200)
+            .mapToObj(id -> supplier(id, id == 200 ? null : "供应商-" + id)).toList();
+        when(arApMapper.selectSummaryParties("AP", 0, 5001)).thenReturn(parties);
+        when(arApMapper.selectSummaryTotals("AP"))
+            .thenReturn(totals("1234.565", "200.005", "1034.560", "12.340"));
+        when(supplierMapper.selectByIds(ids.subList(0, 200))).thenReturn(supplierRows);
+        when(supplierMapper.selectByIds(ids.subList(200, 201))).thenReturn(List.of());
+
+        var result = service.summary("AP");
+
+        assertEquals(201, result.getParties().size());
+        for (int i = 0; i < 199; i++) {
+            assertEquals("供应商-" + (i + 1), result.getParties().get(i).getPartyName());
+        }
+        assertNull(result.getParties().get(199).getPartyName()); // 有记录但名称为空
+        assertNull(result.getParties().get(200).getPartyName()); // 主数据缺失，不回查
+        assertEquals(new BigDecimal("1234.57"), result.getTotalAmount());
+        assertEquals(new BigDecimal("200.01"), result.getSettledAmount());
+        assertEquals(new BigDecimal("1034.56"), result.getUnsettledAmount());
+        assertEquals(new BigDecimal("12.34"), result.getOpeningAmount());
+        assertEquals(new BigDecimal("10.00"), result.getParties().get(0).getAmount());
+        verify(supplierMapper).selectByIds(ids.subList(0, 200));
+        verify(supplierMapper).selectByIds(ids.subList(200, 201));
+        verifyNoMoreInteractions(supplierMapper);
+        verifyNoInteractions(customerMapper, sourceNoMapper);
+        verify(arApMapper).selectSummaryParties("AP", 0, 5001);
+        verify(arApMapper, never()).selectList(any(Wrapper.class));
     }
 
     // ---------- 来源单号（B3） ----------
 
     @Test
     void listByParty_销售来源填充销售单号() {
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+        when(arApMapper.selectByPartyPage("AR", 9L, 0, 5001)).thenReturn(List.of(
             arRow(1L, "AR", 9L, "SALE", 101L, "500.00", "0", "OPEN")
         ));
         when(sourceNoMapper.selectSaleNos(any())).thenReturn(List.of(sourceNo(101L, "XS20260101001")));
@@ -275,7 +320,7 @@ class FinArApServiceImplTest {
 
     @Test
     void listByParty_采购来源填充采购单号() {
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+        when(arApMapper.selectByPartyPage("AP", 8L, 0, 5001)).thenReturn(List.of(
             arRow(1L, "AP", 8L, "PURCHASE", 201L, "1130.00", "0", "OPEN")
         ));
         when(sourceNoMapper.selectPurchaseNos(any())).thenReturn(List.of(sourceNo(201L, "CG20260101001")));
@@ -287,7 +332,7 @@ class FinArApServiceImplTest {
 
     @Test
     void listByParty_期初来源无单号且不查业务单表() {
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+        when(arApMapper.selectByPartyPage("AR", 9L, 0, 5001)).thenReturn(List.of(
             arRow(1L, "AR", 9L, "OPENING", 301L, "2000.00", "0", "OPEN")
         ));
 
@@ -300,7 +345,7 @@ class FinArApServiceImplTest {
 
     @Test
     void listByParty_批量查询来源单号且只查一次() {
-        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+        when(arApMapper.selectByPartyPage("AR", 9L, 0, 5001)).thenReturn(List.of(
             arRow(1L, "AR", 9L, "SALE", 101L, "500.00", "0", "OPEN"),
             arRow(2L, "AR", 9L, "SALE", 102L, "300.00", "0", "OPEN")
         ));
@@ -316,64 +361,106 @@ class FinArApServiceImplTest {
         assertEquals(List.of(101L, 102L), List.copyOf(captor.getValue()));
     }
 
-    // ---------- 期初截止日前的业务单据计数 ----------
+    @Test
+    void getBySource_keepsSingleLookupAndOriginalNullAndNonArSemantics() {
+        var ar = arRow(1L, "AR", 9L, "SALE", 101L, "12.34", "2.34", "PARTIAL");
+        var ap = arRow(2L, "AP", 9L, "PURCHASE", 102L, "12.34", "2.34", "PARTIAL");
+        var missing = arRow(3L, "AR", 99L, "SALE", 103L, "12.34", "2.34", "PARTIAL");
+        var noId = arRow(4L, "AR", 9L, "OPENING", 104L, "12.34", "2.34", "PARTIAL");
+        noId.setPartyId(null);
+        var nonAr = arRow(5L, "XX", 9L, "OPENING", 105L, "12.34", "2.34", "PARTIAL");
+        when(arApMapper.selectOne(any(Wrapper.class)))
+            .thenReturn(ar).thenReturn(ap).thenReturn(missing).thenReturn(noId).thenReturn(nonAr).thenReturn(null);
+        when(customerMapper.selectById(9L)).thenReturn(customer(9L, "单详情客户"));
+        when(supplierMapper.selectById(9L)).thenReturn(supplier(9L, "单详情供应商"));
+
+        var arVo = service.getBySource("SALE", 101L);
+
+        assertEquals("单详情客户", arVo.getPartyName());
+        assertEquals(new BigDecimal("12.34"), arVo.getAmount());
+        assertEquals(new BigDecimal("2.34"), arVo.getSettledAmount());
+        assertEquals(new BigDecimal("10.00"), arVo.getUnsettledAmount());
+        assertNull(arVo.getSourceNo()); // 单详情原本不加载来源单号
+        assertEquals("单详情供应商", service.getBySource("PURCHASE", 102L).getPartyName());
+        assertNull(service.getBySource("SALE", 103L).getPartyName());
+        assertNull(service.getBySource("OPENING", 104L).getPartyName());
+        assertEquals("单详情供应商", service.getBySource("OPENING", 105L).getPartyName());
+        assertNull(service.getBySource("SALE", 999L));
+        verify(customerMapper).selectById(9L);
+        verify(customerMapper).selectById(99L);
+        verify(supplierMapper, times(2)).selectById(9L);
+        verifyNoMoreInteractions(customerMapper, supplierMapper);
+        verifyNoInteractions(sourceNoMapper);
+    }
 
     @Test
     void countBusinessBefore_ar_countsSalesAndReceipts() {
-        when(arApMapper.selectCount(any(Wrapper.class))).thenReturn(2L);
-        when(receiptMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
-
-        long count = service.countBusinessBefore("AR", 9L, BIZ_DATE);
-
-        // 台账来源 + 已确认收款：一笔销售配一笔收款 = 2 条业务触发
-        assertEquals(3L, count);
-        verify(receiptMapper).selectCount(any(Wrapper.class));
-        verify(paymentMapper, never()).selectCount(any(Wrapper.class));
+        when(openingMapper.countLedgerBeforeForUpdate("AR", 9L, BIZ_DATE)).thenReturn(2L);
+        when(openingMapper.countReceiptsBeforeForUpdate(9L, BIZ_DATE)).thenReturn(1L);
+        assertEquals(3L, service.countBusinessBefore("AR", 9L, BIZ_DATE));
+        verify(openingGuard).lockParty("AR", 9L);
+        verify(openingMapper).countReceiptsBeforeForUpdate(9L, BIZ_DATE);
+        verify(openingMapper, never()).countPaymentsBeforeForUpdate(any(), any());
     }
 
     @Test
     void countBusinessBefore_ap_countsPurchaseAndPayments() {
-        when(arApMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
-        when(paymentMapper.selectCount(any(Wrapper.class))).thenReturn(2L);
-
-        long count = service.countBusinessBefore("AP", 10L, BIZ_DATE);
-
-        assertEquals(3L, count);
-        verify(paymentMapper).selectCount(any(Wrapper.class));
-        verify(receiptMapper, never()).selectCount(any(Wrapper.class));
+        when(openingMapper.countLedgerBeforeForUpdate("AP", 10L, BIZ_DATE)).thenReturn(1L);
+        when(openingMapper.countPaymentsBeforeForUpdate(10L, BIZ_DATE)).thenReturn(2L);
+        assertEquals(3L, service.countBusinessBefore("AP", 10L, BIZ_DATE));
+        verify(openingMapper).countPaymentsBeforeForUpdate(10L, BIZ_DATE);
+        verify(openingMapper, never()).countReceiptsBeforeForUpdate(any(), any());
     }
-
-    // ---------- 核销明细来源单号 ----------
 
     @Test
     void listSourceInfo_mapsBusinessNo_andOpeningHasNoNo() {
-        when(arApMapper.selectBatchIds(any())).thenReturn(List.of(
+        when(arApMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
             arRow(1L, "AR", 9L, "SALE", 500L, "100.00", "0.00", "OPEN"),
             arRow(2L, "AP", 8L, "PURCHASE", 600L, "200.00", "0.00", "OPEN"),
             arRow(3L, "AR", 9L, "OPENING", 700L, "300.00", "0.00", "OPEN")));
         when(sourceNoMapper.selectSaleNos(any())).thenReturn(List.of(sourceNo(500L, "XS202611010001")));
         when(sourceNoMapper.selectPurchaseNos(any())).thenReturn(List.of(sourceNo(600L, "CG202611010001")));
-
-        List<FinArApSourceVo> result = service.listSourceInfo(List.of(1L, 2L, 3L));
-
-        assertEquals(3, result.size());
-        assertEquals("SALE", result.get(0).getSourceType());
-        assertEquals("XS202611010001", result.get(0).getSourceNo());
-        assertEquals("CG202611010001", result.get(1).getSourceNo());
-        // 期初没有业务单号：前端退回来源类型文案「期初」
-        assertNull(result.get(2).getSourceNo());
+        var ar = service.listSourceInfo(List.of(1L, 2L, 3L), "AR", 9L);
+        var ap = service.listSourceInfo(List.of(1L, 2L, 3L), "AP", 8L);
+        assertEquals(3, ar.size() + ap.size());
+        assertEquals("SALE", ar.get(0).getSourceType());
+        assertEquals("XS202611010001", ar.get(0).getSourceNo());
+        assertEquals("CG202611010001", ap.get(0).getSourceNo());
+        assertNull(ar.get(1).getSourceNo());
     }
 
     @Test
     void listSourceInfo_emptyIds_returnsEmpty() {
         assertTrue(service.listSourceInfo(List.of()).isEmpty());
+        assertTrue(service.listSourceInfo(List.of(), "AR", 9L).isEmpty());
+        assertEquals(400, assertThrows(ServiceException.class, () -> service.listSourceInfo(List.of(1L))).getCode());
     }
 
     // ---------- 辅助 ----------
 
+    private FinArApSummaryVo totals(String amount, String settled, String unsettled, String opening) {
+        FinArApSummaryVo vo = new FinArApSummaryVo();
+        vo.setTotalAmount(new BigDecimal(amount));
+        vo.setSettledAmount(new BigDecimal(settled));
+        vo.setUnsettledAmount(new BigDecimal(unsettled));
+        vo.setOpeningAmount(new BigDecimal(opening));
+        return vo;
+    }
+
+    private FinArApSummaryVo.PartySummary partySummary(long id, String amount, String settled, String unsettled, String opening) {
+        FinArApSummaryVo.PartySummary vo = new FinArApSummaryVo.PartySummary();
+        vo.setPartyId(id);
+        vo.setAmount(new BigDecimal(amount));
+        vo.setSettled(new BigDecimal(settled));
+        vo.setUnsettled(new BigDecimal(unsettled));
+        vo.setOpening(new BigDecimal(opening));
+        return vo;
+    }
+
     private FinSourceNo sourceNo(long sourceId, String no) {
         FinSourceNo row = new FinSourceNo();
         row.setSourceId(sourceId);
+        row.setPartyId(no.startsWith("CG") ? 8L : 9L);
         row.setNo(no);
         return row;
     }

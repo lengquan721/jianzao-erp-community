@@ -51,7 +51,7 @@
             cell-empty-content="-"
             @column-resize-change="(ctx: any) => saveColumnWidths('sale/list', ctx.columnsWidth)"
           >
-            <template #customer="{ row }">{{ customerName(row.customerId, row.customerName) }}</template>
+            <template #customer="{ row }">{{ row.customerName || '-' }}</template>
             <!-- 来源订单：直开单为空，转单生成的单据显示订单号并可跳订单详情（DOC/31 §10.4） -->
             <template #sourceOrder="{ row }">
               <t-button v-if="row.sourceOrderNo" variant="text" theme="primary" size="small" @click="goSourceOrder(row.sourceOrderId)">
@@ -150,7 +150,16 @@
             </t-col>
             <t-col :span="3">
               <t-form-item label="税率(%)" name="taxRate">
-                <t-input-number v-model="form.taxRate" :decimal-places="2" :min="0" :max="100" :allow-input-over-limit="false" theme="normal" align="right" style="width: 100%" />
+                <t-input-number
+                  v-model="form.taxRate"
+                  :decimal-places="2"
+                  :min="0"
+                  :max="100"
+                  :allow-input-over-limit="false"
+                  theme="normal"
+                  align="right"
+                  style="width: 100%"
+                />
               </t-form-item>
             </t-col>
           </t-row>
@@ -169,18 +178,9 @@
         </t-form>
 
         <!-- 新建时先选来源订单，出现「从订单带入」；已挂单的单据改为只读来源信息回显 -->
-        <div v-if="!form.id && !readonly" class="mb-2 flex items-center gap-2">
+        <div v-if="!form.id && !readonly" class="mb-2 flex flex-wrap items-center gap-2">
           <span class="shrink-0 erp-text-secondary">来源订单</span>
-          <t-select
-            v-model="form.sourceOrderId"
-            :loading="sourceOrderLoading"
-            clearable
-            filterable
-            placeholder="选择已确认的销售订单（可选）"
-            style="width: 320px"
-            :options="sourceOrderOptions"
-            @change="(value: any) => onSourceOrderChange(value)"
-          />
+          <SourceOrderSelect v-if="dialog.visible" v-model="form.sourceOrderId" kind="sale" @change="onSourceOrderChange" />
           <t-button v-if="form.sourceOrderId" theme="success" variant="outline" size="small" @click="openSourceItems">
             <template #icon><DownloadIcon /></template>
             从订单带入
@@ -354,8 +354,18 @@
           </div>
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">{{ readonly ? '关 闭' : '取 消' }}</t-button>
-            <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存为待出库</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:sale:audit'])" theme="success" @click="submitForm(true)">保存并确认出库</t-button>
+            <t-button v-if="!readonly" theme="primary" variant="outline" :loading="saving" :disabled="saving" @click="submitForm(false)">
+              保存为待出库
+            </t-button>
+            <t-button
+              v-if="!readonly && checkPermi(['erp:sale:audit'])"
+              theme="success"
+              :loading="saving"
+              :disabled="saving"
+              @click="submitForm(true)"
+            >
+              保存并确认出库
+            </t-button>
           </div>
         </div>
       </template>
@@ -365,14 +375,7 @@
     <t-dialog v-model:visible="newProduct.visible" :header="newProduct.title" width="520px" attach="body">
       <t-form ref="newProductFormRef" :data="newProductForm" :rules="newProductRules" label-align="top">
         <!-- 字段口径与「商品资料」完全一致：同组件渲染，避免两处表单漂移 -->
-        <ProductFormFields
-          v-model="newProductForm"
-          :category-options="newProductCategories"
-          :supplier-options="newProductSuppliers"
-          :show-type="false"
-          :show-status="false"
-          :cost-readonly="false"
-        />
+        <ProductFormFields v-model="newProductForm" :show-type="false" :show-status="false" :cost-readonly="false" />
         <t-row :gutter="16">
           <t-col :span="6">
             <t-form-item label="入库数量" name="qty">
@@ -403,14 +406,7 @@
     </t-dialog>
 
     <!-- 打印送货单预览：原弹窗无底部按钮，TDesign 默认会渲染「取消/确定」，显式关掉 -->
-    <t-dialog
-      v-model:visible="printDialog.visible"
-      :header="printDialog.title"
-      width="820px"
-      top="4vh"
-      :footer="false"
-      attach="body"
-    >
+    <t-dialog v-model:visible="printDialog.visible" :header="printDialog.title" width="820px" top="4vh" :footer="false" attach="body">
       <div class="flex items-center gap-2 mb-2">
         <span>打印份数</span>
         <t-select v-model="printDialog.copies" style="width: 130px" :options="printCopyOptions" @change="loadPrintHtml" />
@@ -426,6 +422,7 @@
           v-if="printDialog.html"
           ref="printFrameRef"
           :srcdoc="printDialog.html"
+          sandbox="allow-same-origin allow-modals"
           title="打印预览"
           class="erp-print-frame"
           style="width: 100%; height: 62vh"
@@ -485,24 +482,24 @@
 <script setup name="ErpSale" lang="ts">
 import { addSale, confirmSale, delSale, getSale, getSalePriceHistory, listSale, updateSale, voidSale, withdrawSale } from '@/api/erp/trade';
 import { renderSaleDelivery } from '@/api/erp/print';
+import { isPrintableHtml } from '@/utils/erp/printPreview';
 import { ERP_BILL_STATUS, ERP_TAX_TYPE } from '@/api/erp/enums';
 import type { ErpBillStatus, ErpTaxType } from '@/api/erp/enums';
 import type {
   ErpAmount,
   ErpId,
   ErpPriceHistoryVO,
-  ErpProductCategoryVO,
   ErpProductFormModel,
   ErpProductVO,
+  ErpPurchaseOrderVO,
   ErpSaleForm,
   ErpSaleNewProduct,
   ErpSaleOrderItemVO,
   ErpSaleOrderVO,
-  ErpSaleVO,
-  ErpSupplierVO
+  ErpSaleVO
 } from '@/api/erp/types';
-import { listSaleOpenItems, listSaleOrder } from '@/api/erp/order';
-import { customerOptions, productCategoryOptions, supplierOptions } from '@/api/erp/master';
+import { listSaleOpenItems } from '@/api/erp/order';
+import SourceOrderSelect from '@/components/erp/SourceOrderSelect.vue';
 import { formatMoney, formatPercent, formatQtyByScale, formatQtyTrim, normalizeQty, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
@@ -682,6 +679,8 @@ const printCopyOptions = [
 const saleList = ref<ErpSaleVO[]>([]);
 const loading = ref(true);
 const detailLoading = ref(false);
+/** 两种保存方式共用锁，覆盖提交到列表刷新完成的整个异步流程。 */
+const saving = ref(false);
 const showSearch = ref(true);
 const total = ref(0);
 /** 表单实例：TDesign 的校验/重置契约与 EP 不同，统一按 any 持有（与采购入库页同写法） */
@@ -689,7 +688,6 @@ const saleFormRef = ref<any>();
 /** 查询表单：已换 t-form，ref 提供 reset()（EP 是 resetFields()） */
 const queryFormRef = ref<any>();
 const newProductFormRef = ref<any>();
-const customerNameMap = ref<Record<string, string>>({});
 
 const dialog = reactive<DialogOption>({
   visible: false,
@@ -705,13 +703,6 @@ const dialogStatusText = ref('');
 
 const rows = ref<SaleRow[]>([]);
 
-/** 新建时可选的来源订单（仅 CONFIRMED） */
-const sourceOrders = ref<ErpSaleOrderVO[]>([]);
-const sourceOrderLoading = ref(false);
-/** 来源订单下拉：t-select 需要 { label, value }，标签沿用「单号（客户）」 */
-const sourceOrderOptions = computed(() =>
-  sourceOrders.value.map((item) => ({ label: `${item.no ?? ''}（${item.customerName || '客户'}）`, value: item.id }))
-);
 /** 从订单带入弹窗 */
 const openItemState = reactive({ visible: false, loading: false, list: [] as OpenItemRow[] });
 
@@ -753,17 +744,6 @@ const newProductForm = reactive<NewProductFormState>({
   qtyScale: 0,
   qty: undefined
 });
-
-/** 现录现卖弹窗的分类/供应商候选项（无权限时静默为空，不影响建品） */
-const newProductCategories = ref<ErpProductCategoryVO[]>([]);
-const newProductSuppliers = ref<ErpSupplierVO[]>([]);
-
-/** 拉取现录现卖弹窗下拉项：商品分类/所属供应商均可能因权限不可读，失败按空处理 */
-const loadNewProductOptions = async () => {
-  const [categoryRes, supplierRes] = await Promise.allSettled([productCategoryOptions(), supplierOptions()]);
-  newProductCategories.value = categoryRes.status === 'fulfilled' ? (categoryRes.value.data ?? []) : [];
-  newProductSuppliers.value = supplierRes.status === 'fulfilled' ? (supplierRes.value.data ?? []) : [];
-};
 
 // t-form 的 rules 形状与 EP 的 ElFormRules 不兼容（本页仅用于必填星号与现录现卖名称必填）
 const newProductRules: Record<string, any> = {
@@ -821,11 +801,6 @@ const snapshotText = (value: number | undefined | null): string => (value === un
 /** 毛利率为空时显示 '-'（草稿状态无成本快照） */
 const marginText = (value: number | undefined | null): string => (value === undefined || value === null ? '-' : formatPercent(value));
 
-const customerName = (customerId: ErpId | undefined, fallback?: string): string => {
-  if (fallback) return fallback;
-  return customerNameMap.value[String(customerId ?? '')] ?? '-';
-};
-
 /** 行金额 = 数量 × 销售单价 */
 const rowAmount = (index: number): number => {
   const row = rows.value[index];
@@ -846,20 +821,6 @@ const getList = async () => {
     total.value = res.total ?? 0;
   } finally {
     loading.value = false;
-  }
-};
-
-/** 加载客户名称用于列表展示 */
-const loadCustomerNames = async () => {
-  try {
-    const res = await customerOptions();
-    const map: Record<string, string> = {};
-    (res.data ?? []).forEach((item) => {
-      map[String(item.id)] = item.name;
-    });
-    customerNameMap.value = map;
-  } catch {
-    customerNameMap.value = {};
   }
 };
 
@@ -889,26 +850,37 @@ const printDialog = reactive({
   html: ''
 });
 const printFrameRef = ref<HTMLIFrameElement>();
-
+let printRequest = 0;
+const invalidatePrint = () => {
+  ++printRequest;
+  printDialog.html = '';
+  printDialog.loading = false;
+};
+watch(
+  () => printDialog.visible,
+  (visible) => {
+    if (!visible) invalidatePrint();
+  },
+  { flush: 'sync' }
+);
+onBeforeUnmount(invalidatePrint);
 const loadPrintHtml = async () => {
-  if (!printDialog.saleId) return;
+  if (!printDialog.saleId || !printDialog.visible) return;
+  const current = ++printRequest;
+  printDialog.html = '';
   printDialog.loading = true;
   try {
-    const html = ((await renderSaleDelivery(printDialog.saleId, { copies: printDialog.copies })) as unknown as string) ?? '';
-    if (html.trim().startsWith('{"code"')) {
-      let msg = '打印渲染失败';
-      try {
-        msg = JSON.parse(html).msg || msg;
-      } catch {
-        /* 保留默认提示 */
-      }
-      proxy?.$modal.msgWarning(msg);
-      printDialog.html = '';
+    const html: unknown = await renderSaleDelivery(printDialog.saleId, { copies: printDialog.copies });
+    if (current !== printRequest || !printDialog.visible) return;
+    if (!isPrintableHtml(html)) {
+      proxy?.$modal.msgWarning('打印渲染失败，请检查模板');
       return;
     }
     printDialog.html = html;
+  } catch {
+    if (current === printRequest) proxy?.$modal.msgWarning('打印预览加载失败，请稍后重试');
   } finally {
-    printDialog.loading = false;
+    if (current === printRequest) printDialog.loading = false;
   }
 };
 
@@ -923,7 +895,7 @@ const handlePrint = (row: ErpSaleVO) => {
 
 const doPrint = () => {
   const frame = printFrameRef.value;
-  if (!frame?.contentWindow) return;
+  if (!frame?.contentWindow || !printDialog.visible || !printDialog.html || printDialog.loading) return;
   frame.contentWindow.focus();
   frame.contentWindow.print();
 };
@@ -949,7 +921,6 @@ const createRow = (): SaleRow => ({
 const resetForm = async () => {
   Object.assign(form, createForm());
   rows.value = [createRow()];
-  sourceOrders.value = [];
   openItemState.visible = false;
   openItemState.list = [];
   activeRowIndex.value = 0;
@@ -965,31 +936,15 @@ const handleAdd = async () => {
   await resetForm();
   dialog.visible = true;
   dialog.title = '新增销售出库单';
-  void loadSourceOrders();
 };
 
-/**
- * 拉取可挂单的销售订单：只列 CONFIRMED（DOC/31 §10.4）
- */
-const loadSourceOrders = async () => {
-  sourceOrderLoading.value = true;
-  try {
-    const res = await listSaleOrder({ pageNum: 1, pageSize: 200, status: 'CONFIRMED' });
-    sourceOrders.value = res.rows ?? [];
-  } catch {
-    sourceOrders.value = [];
-  } finally {
-    sourceOrderLoading.value = false;
-  }
-};
-
-/** 切换来源订单：同步客户与订单号快照，旧带入行不再属于该订单，整批清掉 */
-const onSourceOrderChange = (orderId?: ErpId) => {
-  const order = sourceOrders.value.find((item) => String(item.id) === String(orderId ?? ''));
-  // 清空时下拉可能回传空串，统一归一成 undefined，避免请求体出现空来源
-  form.sourceOrderId = orderId || undefined;
+/** 选中一条服务端过滤/分页订单时，沿用其客户和单号快照。 */
+const onSourceOrderChange = (order?: ErpSaleOrderVO | ErpPurchaseOrderVO) => {
+  if (order && !('customerId' in order)) return;
   form.sourceOrderNo = order?.no;
-  if (order) form.customerId = order.customerId;
+  if (order && 'customerId' in order) form.customerId = order.customerId;
+  openItemState.visible = false;
+  openItemState.list = [];
   rows.value = [createRow()];
   activeRowIndex.value = 0;
   schedulePriceHistory();
@@ -1258,7 +1213,6 @@ const openNewProduct = (index: number) => {
     qty: source?.qty === undefined ? (index >= 0 ? num(rows.value[index]?.qty) : undefined) : num(source.qty)
   });
   newProduct.visible = true;
-  void loadNewProductOptions();
   nextTick(() => newProductFormRef.value?.clearValidate());
 };
 
@@ -1388,13 +1342,19 @@ const showCostWarnings = (warnings?: string[]) => {
 
 /** 提交按钮 */
 const submitForm = async (confirm: boolean) => {
-  if (!validateRows()) return;
-  const payload = buildPayload(confirm);
-  const res = form.id ? await updateSale(payload) : await addSale(payload);
-  proxy?.$modal.msgSuccess(confirm ? '已保存并确认出库' : '已保存为待出库');
-  if (confirm) showCostWarnings(res.data?.costWarnings);
-  dialog.visible = false;
-  await getList();
+  if (saving.value || readonly.value) return;
+  saving.value = true;
+  try {
+    if (!validateRows()) return;
+    const payload = buildPayload(confirm);
+    const res = form.id ? await updateSale(payload) : await addSale(payload);
+    proxy?.$modal.msgSuccess(confirm ? '已保存并确认出库' : '已保存为待出库');
+    if (confirm) showCostWarnings(res.data?.costWarnings);
+    dialog.visible = false;
+    await getList();
+  } finally {
+    saving.value = false;
+  }
 };
 
 /** 确认按钮操作 */
@@ -1471,7 +1431,6 @@ const consumeRouteQuery = async () => {
 };
 
 onMounted(async () => {
-  await loadCustomerNames();
   if (route.query.keyword || route.query.id) {
     await consumeRouteQuery();
   } else {

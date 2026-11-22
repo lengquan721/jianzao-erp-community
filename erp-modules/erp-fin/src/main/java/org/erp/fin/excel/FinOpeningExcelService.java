@@ -65,7 +65,7 @@ public class FinOpeningExcelService {
     private final ErpSupplierMapper supplierMapper;
 
     /**
-     * 导出当前筛选条件下的全部期初往来。
+     * 导出当前筛选条件下的全部期初往来；listAll 以 5000+1 哨兵限制，超限在写响应前失败。
      *
      * @param partyType AR/AP，可选
      */
@@ -92,6 +92,10 @@ public class FinOpeningExcelService {
         List<ExcelRow<FinOpeningImportRow>> rows;
         try (InputStream inputStream = file.getInputStream()) {
             rows = ExcelRowReader.read(inputStream, FinOpeningImportRow.class);
+        } catch (ExcelRowReader.ImportLimitException e) {
+            ImportResult result = new ImportResult();
+            result.fail(e.rowNumber(), e.getMessage());
+            throw new ImportRollbackException(result);
         }
         ImportResult result = importRows(rows);
         if (result.getFailed() > 0) {
@@ -136,11 +140,11 @@ public class FinOpeningExcelService {
             if (amount != null && amount.signum() < 0) {
                 errors.add("期初金额不能为负");
             }
-            if (partyType != null && partyCode != null) {
-                Integer prevRow = seenParties.putIfAbsent(partyType + "|" + partyCode.toUpperCase(), excelRow.rowNumber());
-                if (prevRow != null) {
-                    errors.add("与第" + prevRow + "行往来单位重复，同一单位只能有一条期初");
-                }
+            if (openingDate != null && openingDate.isAfter(LocalDate.now())) {
+                errors.add("期初截止日不能晚于今天");
+            }
+            if (openingDate != null && openingDate.isBefore(LocalDate.of(1000, 1, 1))) {
+                errors.add("期初截止日超出 MySQL DATE 范围");
             }
 
             Long partyId = null;
@@ -162,6 +166,12 @@ public class FinOpeningExcelService {
                 }
             }
 
+            if (partyType != null && partyId != null) {
+                Integer prevRow = seenParties.putIfAbsent(partyType + "|" + partyId, excelRow.rowNumber());
+                if (prevRow != null) {
+                    errors.add("与第" + prevRow + "行往来单位重复，同一单位只能有一条期初");
+                }
+            }
             if (!errors.isEmpty()) {
                 result.fail(excelRow.rowNumber(), String.join("；", errors));
                 hasError = true;
@@ -183,18 +193,23 @@ public class FinOpeningExcelService {
             return result;
         }
 
-        for (int i = 0; i < validBos.size(); i++) {
+        // 整批事务会一直持有各往来锁；按 AR、AP、ID 固定顺序保存，防止反序文件互锁。
+        List<Integer> saveOrder = java.util.stream.IntStream.range(0, validBos.size()).boxed()
+            .sorted(java.util.Comparator.<Integer>comparingInt(i -> "AR".equals(validBos.get(i).getPartyType()) ? 0 : 1)
+                .thenComparing(i -> validBos.get(i).getPartyId())).toList();
+        for (int position = 0; position < saveOrder.size(); position++) {
+            int i = saveOrder.get(position);
             try {
                 // save 为 upsert，且只写 DRAFT；重复导入即更新
                 openingService.save(validBos.get(i));
             } catch (ServiceException e) {
                 markRollbackOnly();
-                for (int j = 0; j < i; j++) {
+                for (int j = 0; j < position; j++) {
                     result.skipped();
                 }
                 String message = e.getMessage() == null ? "保存失败" : e.getMessage();
                 result.fail(validRows.get(i).rowNumber(), message + "（整批已回滚）");
-                for (int j = i + 1; j < validRows.size(); j++) {
+                for (int j = position + 1; j < validRows.size(); j++) {
                     result.skipped();
                 }
                 log.warn("期初往来导入中止，行 {}：{}", validRows.get(i).rowNumber(), message);
@@ -232,9 +247,29 @@ public class FinOpeningExcelService {
      * VO 转导出行：往来类型转中文，AR 查客户编码、AP 查供应商编码。
      */
     List<FinOpeningExportVo> toExportRows(List<FinOpeningVo> rows) {
-        List<FinOpeningExportVo> result = new ArrayList<>();
-        Map<Long, String> customerCodeCache = new HashMap<>();
-        Map<Long, String> supplierCodeCache = new HashMap<>();
+        final int batchSize = 200;
+        List<FinOpeningExportVo> result = new ArrayList<>(rows.size());
+        Map<Long, String> customerCodes = new HashMap<>();
+        Map<Long, String> supplierCodes = new HashMap<>();
+        List<Long> customerIds = rows.stream()
+            .filter(row -> "AR".equals(row.getPartyType()) && row.getPartyId() != null)
+            .map(FinOpeningVo::getPartyId).distinct().toList();
+        // 保留原非 AR 行取供应商编码的兼容语义；类型显示仍在下方原样转换。
+        List<Long> supplierIds = rows.stream()
+            .filter(row -> !"AR".equals(row.getPartyType()) && row.getPartyId() != null)
+            .map(FinOpeningVo::getPartyId).distinct().toList();
+        for (int start = 0; start < customerIds.size(); start += batchSize) {
+            for (ErpCustomer customer : customerMapper.selectByIds(
+                customerIds.subList(start, Math.min(start + batchSize, customerIds.size())))) {
+                customerCodes.put(customer.getId(), customer.getCode());
+            }
+        }
+        for (int start = 0; start < supplierIds.size(); start += batchSize) {
+            for (ErpSupplier supplier : supplierMapper.selectByIds(
+                supplierIds.subList(start, Math.min(start + batchSize, supplierIds.size())))) {
+                supplierCodes.put(supplier.getId(), supplier.getCode());
+            }
+        }
         for (FinOpeningVo row : rows) {
             FinOpeningExportVo export = new FinOpeningExportVo();
             if ("AR".equals(row.getPartyType())) {
@@ -247,16 +282,9 @@ public class FinOpeningExcelService {
             export.setAmount(row.getAmount());
             export.setOpeningDate(row.getOpeningDate() == null ? null : row.getOpeningDate().toString());
             export.setRemark(row.getRemark());
-            if ("AR".equals(row.getPartyType()) && row.getPartyId() != null) {
-                export.setPartyCode(customerCodeCache.computeIfAbsent(row.getPartyId(), id -> {
-                    ErpCustomer customer = customerMapper.selectById(id);
-                    return customer == null ? null : customer.getCode();
-                }));
-            } else if (row.getPartyId() != null) {
-                export.setPartyCode(supplierCodeCache.computeIfAbsent(row.getPartyId(), id -> {
-                    ErpSupplier supplier = supplierMapper.selectById(id);
-                    return supplier == null ? null : supplier.getCode();
-                }));
+            if (row.getPartyId() != null) {
+                // 缺失记录及 null/空编码只读映射，不 computeIfAbsent，不逐行回查。
+                export.setPartyCode(("AR".equals(row.getPartyType()) ? customerCodes : supplierCodes).get(row.getPartyId()));
             }
             result.add(export);
         }

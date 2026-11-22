@@ -35,6 +35,11 @@ public class PrintTemplate extends TenantEntity {
 
     private String content;
 
+    /**
+     * 设计器组件树 JSON，空表示源码模式
+     */
+    private String schemaJson;
+
     private String paper;
 
     private Integer version;

@@ -92,6 +92,7 @@
             </template>
             <template #remainQty="{ row }">{{ remainText(row.remainQty) }}</template>
             <template #goodsAmount="{ row }">{{ formatMoney(row.goodsAmount) }}</template>
+            <template #executedAmount="{ row }">{{ row.executedAmount == null ? '—' : formatMoney(row.executedAmount) }}</template>
             <template #status="{ row }">
               <div class="flex items-center justify-center gap-1">
                 <StatusTag kind="bill" :value="row.status" :status-text="row.statusText" />
@@ -392,7 +393,7 @@
                 >订单金额（不含运费）：<b>{{ formatMoney(goodsAmount) }}</b></span
               >
               <span>
-                已执行金额（按执行单，含运费）：<b>{{ execAmountLoading ? '加载中…' : execAmountText }}</b>
+                已执行金额（含运费）：<b>{{ execAmountText }}</b>
               </span>
               <span
                 >差异（含运费/超收/退货）：<b>{{ diffAmountText }}</b></span
@@ -421,6 +422,7 @@
               <template #execType="{ row }">{{ row.typeText || (row.type === 'RETURN' ? '退货' : '出库') }}</template>
               <template #execDate="{ row }">{{ toDate(row.bizDate) || '-' }}</template>
               <template #execQty="{ row }">{{ formatQtyTrim(row.qty) }}</template>
+              <template #execAmount="{ row }">{{ row.amount == null ? '—' : formatMoney(row.amount) }}</template>
               <template #execStatus="{ row }">
                 <StatusTag
                   kind="bill"
@@ -521,7 +523,6 @@ import {
   voidSaleOrder,
   withdrawSaleOrder
 } from '@/api/erp/order';
-import { getSale, getSaleReturn } from '@/api/erp/trade';
 import { ERP_BILL_STATUS, ERP_ORDER_EXEC_STATUS, ERP_TAX_TYPE } from '@/api/erp/enums';
 import type { ErpBillStatus, ErpOrderExecStatus, ErpTaxType } from '@/api/erp/enums';
 import type {
@@ -535,6 +536,7 @@ import type {
   ErpSaleOrderVO
 } from '@/api/erp/types';
 import { formatMoney, formatQtyTrim, normalizeQty, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
+import { readExecutedAmount } from '@/utils/erp/tradeContracts';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { checkPermi } from '@/utils/permission';
@@ -622,6 +624,7 @@ const listColumns = computed<any[]>(() =>
     { colKey: 'progress', title: '执行进度', align: 'center', width: 180, cell: 'progress' },
     { colKey: 'remainQty', title: '未交量', align: 'right', width: 100, ellipsis: true, cell: 'remainQty' },
     { colKey: 'goodsAmount', title: '订单金额（不含运费）', align: 'right', width: 170, ellipsis: true, cell: 'goodsAmount' },
+    { colKey: 'executedAmount', title: '已执行金额（含运费）', align: 'right', width: 170, cell: 'executedAmount' },
     { colKey: 'salespersonName', title: '跟单人', align: 'center', width: 100, ellipsis: true },
     { colKey: 'status', title: '状态', align: 'center', width: 160, cell: 'status' },
     // 操作列改图标按钮（DOC/35 §13）：8 个动作按状态最多同时出现 6 个，24px 图标按钮 + 4px 间距约 164px
@@ -654,6 +657,7 @@ const execColumns: any[] = [
   { colKey: 'type', title: '类型', align: 'center', width: 100, cell: 'execType' },
   { colKey: 'bizDate', title: '日期', align: 'center', width: 120, cell: 'execDate' },
   { colKey: 'qty', title: '数量', align: 'right', width: 120, cell: 'execQty' },
+  { colKey: 'amount', title: '金额（含运费）', align: 'right', width: 130, cell: 'execAmount' },
   { colKey: 'status', title: '状态', align: 'center', width: 110, cell: 'execStatus' }
 ];
 mergeSavedWidths('order-sale/exec', execColumns);
@@ -697,8 +701,7 @@ const rows = ref<OrderRow[]>([]);
 const execList = ref<ErpSaleOrderExecVO[]>([]);
 const execLoading = ref(false);
 /** 已执行金额（按执行单含运费）；null=取不到执行单详情，不做估算 */
-const execAmount = ref<number | null>(0);
-const execAmountLoading = ref(false);
+const execAmount = ref<number | null>(null);
 
 const transfer = reactive({
   visible: false,
@@ -926,6 +929,7 @@ const loadDetail = async (id: ErpId) => {
     detailStatusText.value = detail.statusText ?? '';
     detailExecStatus.value = detail.execStatus ?? '';
     detailExecStatusText.value = detail.execStatusText ?? '';
+    execAmount.value = readExecutedAmount(detail);
     Object.assign(form, {
       id: detail.id,
       customerId: detail.customerId,
@@ -1104,46 +1108,15 @@ const submitForm = async () => {
 const loadExecutions = async (id: ErpId) => {
   execLoading.value = true;
   execList.value = [];
-  execAmount.value = 0;
   try {
     const res = await listSaleOrderExecutions(id);
+    // amount 已由后端按执行正值、退货负值返回；无需逐单请求明细。
     execList.value = res.data ?? [];
-    await loadExecAmount();
   } catch {
-    // 执行记录失败不阻塞订单内容展示；接口拦截器已给出错误提示
+    // 执行记录失败不阻塞订单内容；执行金额仍取订单 VO 的批量聚合值。
     execList.value = [];
-    execAmount.value = null;
   } finally {
     execLoading.value = false;
-  }
-};
-
-/** 已执行金额按执行单 total_amount（含运费）汇总，退货冲减；取不到详情或无权查看时留空不估算 */
-const loadExecAmount = async () => {
-  const bills = execList.value.filter((record) => record.status === 'CONFIRMED');
-  if (bills.length === 0) {
-    execAmount.value = 0;
-    return;
-  }
-  // 缺执行单查看权限时不发请求，避免 403 弹窗；金额显示「—」而不是估算值
-  const readable = bills.every((record) => checkPermi([record.type === 'RETURN' ? 'erp:sale-return:query' : 'erp:sale:query']));
-  if (!readable) {
-    execAmount.value = null;
-    return;
-  }
-  execAmountLoading.value = true;
-  try {
-    const amounts = await Promise.all(
-      bills.map(async (record) => {
-        const res = record.type === 'RETURN' ? await getSaleReturn(record.id) : await getSale(record.id);
-        return (record.type === 'RETURN' ? -1 : 1) * num(res.data?.totalAmount);
-      })
-    );
-    execAmount.value = roundMoney(amounts.reduce((sum, amount) => sum + amount, 0));
-  } catch {
-    execAmount.value = null;
-  } finally {
-    execAmountLoading.value = false;
   }
 };
 

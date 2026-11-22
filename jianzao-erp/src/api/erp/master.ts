@@ -1,8 +1,13 @@
 import request from '@/utils/request';
-import { AxiosPromise } from 'axios';
+import type { AxiosPromise } from 'axios';
+import { fetchIdBatches } from './idBatches';
 import type {
   ErpCustomerForm,
   ErpCustomerVO,
+  ErpId,
+  ErpOptionPage,
+  ErpOptionQuery,
+  ErpPageResult,
   ErpPartyQuery,
   ErpProductCategoryForm,
   ErpProductCategoryVO,
@@ -11,6 +16,8 @@ import type {
   ErpProductVO,
   ErpRecipeItem,
   ErpRecipeItemVO,
+  ErpResult,
+  ErpProductType,
   ErpSupplierForm,
   ErpSupplierVO,
   ErpWarehouseForm,
@@ -32,19 +39,34 @@ export interface ErpImportResult {
   errors: ErpImportError[];
 }
 
+/** options 使用 R<{rows, hasMore, nextPageNum}>；维护列表、Excel 等原契约不变。 */
+async function fetchOptionPage<T>(resource: string, query: ErpOptionQuery): Promise<ErpOptionPage<T>> {
+  const res = await request<unknown, ErpResult<ErpOptionPage<T>>>({
+    url: `/erp/master/${resource}/options`,
+    method: 'get',
+    params: query,
+    headers: { silentError: 'true', silentHttpError: 'true' }
+  });
+  return res.data;
+}
+
 /* ------------------------------ 产品 ------------------------------ */
 
-export function listProduct(query: ErpProductQuery): AxiosPromise<ErpProductVO[]> {
-  return request({ url: '/erp/master/products/list', method: 'get', params: query });
+export function listProduct(query: ErpProductQuery): Promise<ErpPageResult<ErpProductVO>> {
+  return request<unknown, ErpPageResult<ErpProductVO>>({ url: '/erp/master/products/list', method: 'get', params: query });
 }
 
 export function getProduct(id: string | number): AxiosPromise<ErpProductVO> {
   return request({ url: `/erp/master/products/${id}`, method: 'get' });
 }
 
-/** 产品下拉选项，远程搜索；categoryId 非空时按商品分类过滤，type 非空时按成品/原料过滤（DOC/26 §4.4） */
-export function productOptions(keyword?: string, categoryId?: string | number, type?: string): AxiosPromise<ErpProductVO[]> {
-  return request({ url: '/erp/master/products/options', method: 'get', params: { keyword, categoryId, type } });
+/** 产品选项的关键词、分类、成品/原料均由服务端过滤。 */
+export function productOptions(query: ErpOptionQuery & { categoryId?: ErpId; type?: ErpProductType }): Promise<ErpOptionPage<ErpProductVO>> {
+  return fetchOptionPage<ErpProductVO>('products', query);
+}
+
+export function productOptionsByIds(ids: readonly ErpId[]): Promise<ErpProductVO[]> {
+  return fetchIdBatches<ErpProductVO>('/erp/master/products/options/by-ids', ids);
 }
 
 export function addProduct(data: ErpProductForm): AxiosPromise<void> {
@@ -84,9 +106,25 @@ export function saveRecipe(id: string | number, items: ErpRecipeItem[]): AxiosPr
 
 /* ------------------------------ 商品分类 ------------------------------ */
 
-/** 分类下拉/分组用列表（含停用分类，按排序升序） */
-export function productCategoryOptions(keyword?: string): AxiosPromise<ErpProductCategoryVO[]> {
-  return request({ url: '/erp/master/product-categories/options', method: 'get', params: { keyword } });
+export function productCategoryOptions(query: ErpOptionQuery): Promise<ErpOptionPage<ErpProductCategoryVO>> {
+  return fetchOptionPage<ErpProductCategoryVO>('product-categories', query);
+}
+
+export function productCategoryOptionsByIds(ids: readonly ErpId[]): Promise<ErpProductCategoryVO[]> {
+  return fetchIdBatches<ErpProductCategoryVO>('/erp/master/product-categories/options/by-ids', ids);
+}
+
+/** 分类维护与快速筛选标签保留完整字典（含停用）；普通下拉仍逐页搜索。 */
+export async function listAllProductCategories(): Promise<ErpProductCategoryVO[]> {
+  const rows: ErpProductCategoryVO[] = [];
+  let pageNum = 1;
+  while (true) {
+    const page = await productCategoryOptions({ pageNum, pageSize: 100 });
+    rows.push(...page.rows);
+    if (!page.hasMore) return rows;
+    if (page.nextPageNum == null || page.nextPageNum <= pageNum) throw new Error('商品分类分页缺少有效的下一页');
+    pageNum = page.nextPageNum;
+  }
 }
 
 export function addProductCategory(data: ErpProductCategoryForm): AxiosPromise<void> {
@@ -111,8 +149,12 @@ export function getSupplier(id: string | number): AxiosPromise<ErpSupplierVO> {
   return request({ url: `/erp/master/suppliers/${id}`, method: 'get' });
 }
 
-export function supplierOptions(keyword?: string): AxiosPromise<ErpSupplierVO[]> {
-  return request({ url: '/erp/master/suppliers/options', method: 'get', params: { keyword } });
+export function supplierOptions(query: ErpOptionQuery): Promise<ErpOptionPage<ErpSupplierVO>> {
+  return fetchOptionPage<ErpSupplierVO>('suppliers', query);
+}
+
+export function supplierOptionsByIds(ids: readonly ErpId[]): Promise<ErpSupplierVO[]> {
+  return fetchIdBatches<ErpSupplierVO>('/erp/master/suppliers/options/by-ids', ids);
 }
 
 export function addSupplier(data: ErpSupplierForm): AxiosPromise<void> {
@@ -152,8 +194,12 @@ export function getCustomer(id: string | number): AxiosPromise<ErpCustomerVO> {
   return request({ url: `/erp/master/customers/${id}`, method: 'get' });
 }
 
-export function customerOptions(keyword?: string): AxiosPromise<ErpCustomerVO[]> {
-  return request({ url: '/erp/master/customers/options', method: 'get', params: { keyword } });
+export function customerOptions(query: ErpOptionQuery): Promise<ErpOptionPage<ErpCustomerVO>> {
+  return fetchOptionPage<ErpCustomerVO>('customers', query);
+}
+
+export function customerOptionsByIds(ids: readonly ErpId[]): Promise<ErpCustomerVO[]> {
+  return fetchIdBatches<ErpCustomerVO>('/erp/master/customers/options/by-ids', ids);
 }
 
 export function addCustomer(data: ErpCustomerForm): AxiosPromise<void> {
@@ -189,8 +235,12 @@ export function listWarehouse(query: ErpPartyQuery): AxiosPromise<ErpWarehouseVO
   return request({ url: '/erp/master/warehouses/list', method: 'get', params: query });
 }
 
-export function warehouseOptions(keyword?: string): AxiosPromise<ErpWarehouseVO[]> {
-  return request({ url: '/erp/master/warehouses/options', method: 'get', params: { keyword } });
+export function warehouseOptions(query: ErpOptionQuery): Promise<ErpOptionPage<ErpWarehouseVO>> {
+  return fetchOptionPage<ErpWarehouseVO>('warehouses', query);
+}
+
+export function warehouseOptionsByIds(ids: readonly ErpId[]): Promise<ErpWarehouseVO[]> {
+  return fetchIdBatches<ErpWarehouseVO>('/erp/master/warehouses/options/by-ids', ids);
 }
 
 export function addWarehouse(data: ErpWarehouseForm): AxiosPromise<void> {

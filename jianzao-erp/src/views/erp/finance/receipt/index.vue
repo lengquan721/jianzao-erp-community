@@ -44,7 +44,7 @@
             :empty="'暂无收款单'"
             @column-resize-change="(ctx: any) => saveColumnWidths('finance-receipt/list', ctx.columnsWidth)"
           >
-            <template #amount="{ row }">{{ formatMoney(row.amount) }}</template>
+            <template #amount="{ row }">{{ formatMoney(signedReceiptAmount(row.amount, row.negative)) }}</template>
             <template #bizDate="{ row }">{{ toDate(row.bizDate) }}</template>
             <template #status="{ row }">
               <StatusTag kind="bill" :value="row.status" :status-text="row.statusText" />
@@ -57,22 +57,38 @@
                     <template #icon><BrowseIcon /></template>
                   </t-button>
                 </t-tooltip>
-                <t-tooltip v-if="row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:edit'])" content="编辑" placement="top">
+                <t-tooltip
+                  v-if="!isControlledRefund(row.negative) && row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:edit'])"
+                  content="编辑"
+                  placement="top"
+                >
                   <t-button theme="primary" variant="text" shape="square" size="small" @click="handleEdit(row)">
                     <template #icon><Edit1Icon /></template>
                   </t-button>
                 </t-tooltip>
-                <t-tooltip v-if="row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:confirm'])" content="确认" placement="top">
+                <t-tooltip
+                  v-if="!isControlledRefund(row.negative) && row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:confirm'])"
+                  content="确认"
+                  placement="top"
+                >
                   <t-button theme="success" variant="text" shape="square" size="small" @click="handleConfirm(row)">
                     <template #icon><CheckCircleIcon /></template>
                   </t-button>
                 </t-tooltip>
-                <t-tooltip v-if="row.status === 'CONFIRMED' && checkPermi(['erp:finance:receipt:withdraw'])" content="撤回" placement="top">
+                <t-tooltip
+                  v-if="!isControlledRefund(row.negative) && row.status === 'CONFIRMED' && checkPermi(['erp:finance:receipt:withdraw'])"
+                  content="撤回"
+                  placement="top"
+                >
                   <t-button theme="warning" variant="text" shape="square" size="small" @click="handleWithdraw(row)">
                     <template #icon><RollbackIcon /></template>
                   </t-button>
                 </t-tooltip>
-                <t-tooltip v-if="row.status === 'CONFIRMED' && checkPermi(['erp:finance:receipt:void'])" content="作废" placement="top">
+                <t-tooltip
+                  v-if="!isControlledRefund(row.negative) && row.status === 'CONFIRMED' && checkPermi(['erp:finance:receipt:void'])"
+                  content="作废"
+                  placement="top"
+                >
                   <t-button theme="danger" variant="text" shape="square" size="small" @click="handleVoid(row)">
                     <template #icon><CloseCircleIcon /></template>
                   </t-button>
@@ -82,7 +98,11 @@
                     <template #icon><PrintIcon /></template>
                   </t-button>
                 </t-tooltip>
-                <t-tooltip v-if="row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:remove'])" content="删除" placement="top">
+                <t-tooltip
+                  v-if="!isControlledRefund(row.negative) && row.status === 'DRAFT' && checkPermi(['erp:finance:receipt:remove'])"
+                  content="删除"
+                  placement="top"
+                >
                   <t-button theme="danger" variant="text" shape="square" size="small" @click="handleDelete(row)">
                     <template #icon><DeleteIcon /></template>
                   </t-button>
@@ -107,7 +127,7 @@
     <!-- 新增 / 编辑 / 查看 收款单 -->
     <t-dialog v-model:visible="dialog.visible" :header="dialog.title" width="92%" top="3vh" attach="body">
       <!-- 弹窗内容超出视口时由 .t-dialog__wrap 纵向滚动；原 :body-style 落在普通 div 上无效，随迁移一并删除 -->
-      <t-form ref="receiptFormRef" :data="form" :rules="rules" label-align="top" :disabled="readonly">
+      <t-form ref="receiptFormRef" :data="form" :rules="rules" label-align="top" :disabled="readonly || controlledRefund">
         <!-- TDesign 为 12 栅格：原 6/5/5/4/4 折算后 13 超一屏，拆两行，每行合计 12 -->
         <t-row :gutter="16">
           <t-col :span="3">
@@ -122,11 +142,19 @@
           </t-col>
           <t-col :span="3">
             <t-form-item label="收款金额" name="amount">
-              <t-input-number v-model="form.amount" :decimal-places="2" :min="0" theme="normal" align="right" style="width: 100%" />
+              <t-input-number
+                v-if="!controlledRefund"
+                v-model="form.amount"
+                :decimal-places="2"
+                :min="0"
+                theme="normal"
+                align="right"
+                style="width: 100%"
+              />
+              <t-input v-else :value="formatMoney(signedReceiptAmount(form.amount, 1))" readonly />
             </t-form-item>
           </t-col>
           <t-col :span="3">
-            <!-- 结算账户：新建必填（后端 saveHead 同口径）；存量单只有账户文本时不标必填 -->
             <t-form-item label="结算账户" name="accountId" :required-mark="!form.id">
               <t-select v-model="form.accountId" filterable placeholder="请选择结算账户" style="width: 100%" :options="accountSelectOptions" />
             </t-form-item>
@@ -144,7 +172,8 @@
       <div class="erp-detail-bar">
         <div class="flex items-center gap-2">
           <span class="erp-detail-bar__title">核销明细</span>
-          <t-tag v-if="readonly" theme="default" size="small">已确认/已作废单据不可修改</t-tag>
+          <t-tag v-if="controlledRefund" theme="danger" size="small">销售退货退款，请在关联退货单处理</t-tag>
+          <t-tag v-else-if="readonly" theme="default" size="small">已确认/已作废单据不可修改</t-tag>
           <t-tag v-else-if="!form.customerId" theme="default" size="small">请先选择客户</t-tag>
         </div>
       </div>
@@ -189,10 +218,12 @@
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-4 text-sm">
             <span
-              >核销合计：<b :class="balanced ? 'amount-ok' : 'amount-bad'">{{ formatMoney(allocSum) }}</b></span
+              >核销合计：<b :class="balanced ? 'amount-ok' : 'amount-bad'">{{
+                formatMoney(isControlledRefund(form.negative) ? -allocSum : allocSum)
+              }}</b></span
             >
             <span
-              >收款金额：<b class="amount-main">{{ formatMoney(form.amount) }}</b></span
+              >收款金额：<b class="amount-main">{{ formatMoney(signedReceiptAmount(form.amount, form.negative)) }}</b></span
             >
             <t-tag v-if="balanced" theme="success" size="small">核销已平衡</t-tag>
             <t-tag v-else theme="danger" size="small">核销合计须等于收款金额</t-tag>
@@ -200,7 +231,9 @@
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">{{ readonly ? '关 闭' : '取 消' }}</t-button>
             <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存草稿</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:finance:receipt:confirm'])" theme="success" :disabled="!balanced" @click="submitForm(true)">保存并确认</t-button>
+            <t-button v-if="!readonly && checkPermi(['erp:finance:receipt:confirm'])" theme="success" :disabled="!balanced" @click="submitForm(true)"
+              >保存并确认</t-button
+            >
           </div>
         </div>
       </template>
@@ -222,14 +255,16 @@ import {
 } from '@/api/erp/finance';
 import { ERP_AR_AP_SOURCE_TYPE, ERP_BILL_STATUS } from '@/api/erp/enums';
 import { accountOptions as accountOptionsFn } from '@/api/erp/account';
-import type { ErpAmount, ErpArApSourceType, ErpBillStatus, ErpId, FinAccountVO, FinArApVO, FinReceiptForm, FinReceiptVO } from '@/api/erp/types';
+import type { FinAccountOption } from '@/api/erp/account';
+import FinancePrintDialog from '@/components/erp/FinancePrintDialog.vue';
+import type { ErpAmount, ErpArApSourceType, ErpBillStatus, ErpId, FinArApVO, FinReceiptForm, FinReceiptVO } from '@/api/erp/types';
 import { formatMoney, isAllocationBalanced, roundMoney, sumAllocation } from '@/utils/erp/calc';
+import { isControlledRefund, signedReceiptAmount } from '@/utils/erp/tradeContracts';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import PartnerSelect from '@/components/erp/PartnerSelect.vue';
 import StatusTag from '@/components/erp/StatusTag.vue';
-import FinancePrintDialog from '@/components/erp/FinancePrintDialog.vue';
 import { BrowseIcon, CheckCircleIcon, CloseCircleIcon, DeleteIcon, Edit1Icon, PlusIcon, PrintIcon, RollbackIcon } from 'tdesign-icons-vue-next';
 
 interface AllocRow {
@@ -249,6 +284,8 @@ interface ReceiptFormState {
   customerId?: ErpId;
   bizDate: string;
   amount: number;
+  /** 由销售退货受控生成的红字退款，不得在普通收款页操作。 */
+  negative?: number;
   /** 结算账户ID；存量单为空时只读展示 account 文本 */
   accountId?: ErpId;
   /** 存量账户文本（只读回显） */
@@ -262,7 +299,6 @@ interface ReceiptQueryState extends PageQuery {
 }
 
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
-const printDialogRef = ref<InstanceType<typeof FinancePrintDialog>>();
 
 const statusOptions = Object.entries(ERP_BILL_STATUS).map(([value, item]) => ({ value: value as ErpBillStatus, label: item.label }));
 
@@ -293,7 +329,8 @@ const allocColumns: any[] = [
 mergeSavedWidths('finance-receipt/alloc', allocColumns);
 
 /** 启用账户下拉（DOC/25 §4.5，页面加载取一次） */
-const accountOptions = ref<FinAccountVO[]>([]);
+const printDialogRef = ref<InstanceType<typeof FinancePrintDialog>>();
+const accountOptions = ref<FinAccountOption[]>([]);
 /** 账户下拉选项：t-select 需要 { label, value }，不能用 v-for el-option */
 const accountSelectOptions = computed(() => accountOptions.value.map((acc) => ({ label: acc.name, value: acc.id })));
 const loadAccountOptions = async () => {
@@ -321,6 +358,7 @@ const dialog = reactive<DialogOption>({
 
 /** 只读（查看已确认/已作废单据） */
 const readonly = ref(false);
+const controlledRefund = computed(() => isControlledRefund(form.negative));
 
 /** 核销明细行 */
 const allocRows = ref<AllocRow[]>([]);
@@ -330,6 +368,7 @@ const createForm = (): ReceiptFormState => ({
   customerId: undefined,
   bizDate: new Date().toISOString().slice(0, 10),
   amount: 0,
+  negative: 0,
   accountId: undefined,
   accountText: '',
   remark: ''
@@ -375,13 +414,32 @@ const allocSum = computed(() => sumAllocation(selectedAllocations.value));
 /** 核销合计是否与收款金额平衡 */
 const balanced = computed(() => isAllocationBalanced(form.amount, selectedAllocations.value));
 
-/** 加载客户未结清台账 */
+/** 台账与详情共用请求序号：切客户、清空或重开表单后，旧响应不得回写。 */
+let ledgerSeq = 0;
+watch(
+  () => dialog.visible,
+  (visible) => {
+    if (!visible) {
+      ++ledgerSeq;
+      allocRows.value = [];
+      detailLoading.value = false;
+    }
+  },
+  { flush: 'sync' }
+);
+onBeforeUnmount(() => {
+  ++ledgerSeq;
+});
+
+/** 加载客户未结清台账，返回请求序号供详情核销回显校验归属。 */
 const loadLedger = async (customerId?: ErpId) => {
+  const seq = ++ledgerSeq;
   allocRows.value = [];
-  if (!customerId) return;
-  detailLoading.value = true;
+  detailLoading.value = !!customerId;
+  if (!customerId) return seq;
   try {
-    const res = await arApDetail('AR', customerId);
+    const res = await arApDetail('AR', customerId, true);
+    if (seq !== ledgerSeq) return seq;
     const list = (res.data ?? []) as FinArApVO[];
     allocRows.value = list
       .filter((item) => item.status !== 'VOID' && num(item.unsettledAmount) > 0)
@@ -397,17 +455,20 @@ const loadLedger = async (customerId?: ErpId) => {
         allocAmount: 0
       }));
   } catch {
-    allocRows.value = [];
+    if (seq === ledgerSeq) allocRows.value = [];
   } finally {
-    detailLoading.value = false;
+    if (seq === ledgerSeq) detailLoading.value = false;
   }
+  return seq;
 };
 
 /** 回显已保存的核销明细并与台账合并 */
-const applyAllocations = (allocations: { arApId: ErpId; amount: ErpAmount }[]) => {
+const applyAllocations = (allocations: { arApId: ErpId; amount: ErpAmount; sourceNo?: string; sourceType?: string }[]) => {
   (allocations ?? []).forEach((alloc) => {
     const hit = allocRows.value.find((row) => String(row.arApId) === String(alloc.arApId));
     if (hit) {
+      hit.sourceNo ||= alloc.sourceNo;
+      hit.sourceType ||= alloc.sourceType;
       hit.checked = true;
       hit.allocAmount = num(alloc.amount);
     } else {
@@ -415,8 +476,8 @@ const applyAllocations = (allocations: { arApId: ErpId; amount: ErpAmount }[]) =
       allocRows.value.push({
         arApId: alloc.arApId,
         bizDate: undefined,
-        sourceNo: undefined,
-        sourceType: undefined,
+        sourceNo: alloc.sourceNo,
+        sourceType: alloc.sourceType,
         amount: 0,
         settledAmount: 0,
         unsettledAmount: num(alloc.amount),
@@ -456,6 +517,8 @@ const resetQuery = () => {
 
 /** 表单重置 */
 const resetForm = () => {
+  ++ledgerSeq;
+  detailLoading.value = false;
   Object.assign(form, createForm());
   allocRows.value = [];
   readonly.value = false;
@@ -477,29 +540,34 @@ const handlePartyChange = async () => {
 
 /** 载入详情 */
 const loadDetail = async (id: ErpId, isReadonly: boolean) => {
+  let seq = ++ledgerSeq;
   detailLoading.value = true;
   try {
     const res = await getReceipt(id);
+    if (seq !== ledgerSeq) return;
     const detail = res.data;
     Object.assign(form, {
       id: detail.id,
       customerId: detail.customerId,
       bizDate: toDate(detail.bizDate),
       amount: num(detail.amount),
+      negative: detail.negative ?? 0,
       accountId: detail.accountId ?? undefined,
       accountText: detail.account || '',
       remark: detail.remark || ''
     });
-    readonly.value = isReadonly;
-    await loadLedger(detail.customerId);
+    readonly.value = isReadonly || isControlledRefund(detail.negative);
+    seq = await loadLedger(detail.customerId);
+    if (seq !== ledgerSeq) return;
     applyAllocations(detail.allocations ?? []);
   } finally {
-    detailLoading.value = false;
+    if (seq === ledgerSeq) detailLoading.value = false;
   }
 };
 
 /** 编辑按钮操作 */
 const handleEdit = async (row: FinReceiptVO) => {
+  if (isControlledRefund(row.negative)) return;
   resetForm();
   dialog.visible = true;
   dialog.title = `编辑收款单 ${row.no ?? ''}`;
@@ -532,7 +600,7 @@ const submitForm = async (confirm: boolean) => {
   // t-form 的 validate() 失败是 resolve(false)，不是 reject
   const r = await receiptFormRef.value?.validate().catch(() => false);
   const ok = r === true || r === undefined;
-  if (!ok) return;
+  if (!ok || readonly.value || controlledRefund.value) return;
   if (!form.customerId) {
     proxy?.$modal.msgWarning('请选择客户');
     return;
@@ -541,8 +609,8 @@ const submitForm = async (confirm: boolean) => {
     proxy?.$modal.msgWarning('收款金额必须大于 0');
     return;
   }
-  // 结算账户：新建必填；存量单沿用 account 文本（与后端 saveHead 口径一致）
-  if (!form.accountId && !form.accountText) {
+  if (confirm && !checkPermi(['erp:finance:receipt:confirm'])) return;
+  if ((!form.id && !form.accountId) || (form.id && !form.accountId && !form.accountText)) {
     proxy?.$modal.msgWarning('请选择结算账户');
     return;
   }
@@ -563,6 +631,7 @@ const submitForm = async (confirm: boolean) => {
 
 /** 确认按钮操作 */
 const handleConfirm = async (row: FinReceiptVO) => {
+  if (isControlledRefund(row.negative)) return;
   try {
     await proxy?.$modal.confirm(`是否确认收款单「${row.no ?? ''}」？确认后将核销对应应收台账。`);
   } catch {
@@ -575,6 +644,7 @@ const handleConfirm = async (row: FinReceiptVO) => {
 
 /** 撤回按钮操作 */
 const handleWithdraw = async (row: FinReceiptVO) => {
+  if (isControlledRefund(row.negative)) return;
   try {
     await proxy?.$modal.confirm(`是否撤回收款单「${row.no ?? ''}」？撤回后核销将被反核销并回到草稿。`);
   } catch {
@@ -587,6 +657,7 @@ const handleWithdraw = async (row: FinReceiptVO) => {
 
 /** 作废按钮操作 */
 const handleVoid = async (row: FinReceiptVO) => {
+  if (isControlledRefund(row.negative)) return;
   try {
     await proxy?.$modal.confirm(`是否作废收款单「${row.no ?? ''}」？作废为终态，不可再修改。`);
   } catch {
@@ -599,6 +670,7 @@ const handleVoid = async (row: FinReceiptVO) => {
 
 /** 删除按钮操作（仅草稿可删） */
 const handleDelete = async (row: FinReceiptVO) => {
+  if (isControlledRefund(row.negative)) return;
   try {
     await proxy?.$modal.confirm(`是否删除收款单「${row.no ?? ''}」？删除后不可恢复。`);
   } catch {

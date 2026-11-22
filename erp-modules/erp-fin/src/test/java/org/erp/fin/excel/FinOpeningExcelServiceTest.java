@@ -23,14 +23,21 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
+import java.util.stream.LongStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -72,8 +79,8 @@ class FinOpeningExcelServiceTest {
     @Test
     void importRows_success_mapsPartyTypeAndCounts() {
         ImportResult result = service.importRows(rows(
-            row("应收", "C001", "2000.00", "2026-09-30", "期初应收"),
-            row("应付", "S001", "800.50", "2026-09-30", null)));
+            row("应收", "C001", "2000.00", "期初应收"),
+            row("应付", "S001", "800.50", null)));
 
         assertEquals(2, result.getTotal());
         assertEquals(2, result.getSuccess());
@@ -92,7 +99,7 @@ class FinOpeningExcelServiceTest {
     void importRows_unknownCustomerCode_failsWithoutSaving() {
         when(customerMapper.selectOne(any(Wrapper.class))).thenReturn(null);
 
-        ImportResult result = service.importRows(rows(row("应收", "UNKNOWN", "1", "2026-09-30", null)));
+        ImportResult result = service.importRows(rows(row("应收", "UNKNOWN", "1", null)));
 
         assertEquals(1, result.getFailed());
         assertTrue(result.getErrors().get(0).message().contains("客户编码不存在"));
@@ -103,7 +110,7 @@ class FinOpeningExcelServiceTest {
     void importRows_unknownSupplierCode_failsWithoutSaving() {
         when(supplierMapper.selectOne(any(Wrapper.class))).thenReturn(null);
 
-        ImportResult result = service.importRows(rows(row("应付", "UNKNOWN", "1", "2026-09-30", null)));
+        ImportResult result = service.importRows(rows(row("应付", "UNKNOWN", "1", null)));
 
         assertEquals(1, result.getFailed());
         assertTrue(result.getErrors().get(0).message().contains("供应商编码不存在"));
@@ -112,7 +119,7 @@ class FinOpeningExcelServiceTest {
 
     @Test
     void importRows_invalidPartyType_rejected() {
-        ImportResult result = service.importRows(rows(row("其他", "C001", "1", "2026-09-30", null)));
+        ImportResult result = service.importRows(rows(row("其他", "C001", "1", null)));
 
         assertEquals(1, result.getFailed());
         assertTrue(result.getErrors().get(0).message().contains("往来类型取值无效"));
@@ -122,8 +129,8 @@ class FinOpeningExcelServiceTest {
     @Test
     void importRows_negativeOrTooManyDecimalsAmount_rejected() {
         ImportResult result = service.importRows(rows(
-            row("应收", "C001", "-1", "2026-09-30", null),
-            row("应收", "C001", "1.234", "2026-09-30", null)));
+            row("应收", "C001", "-1", null),
+            row("应收", "C001", "1.234", null)));
 
         assertEquals(2, result.getFailed());
         assertTrue(result.getErrors().get(0).message().contains("期初金额不能为负"));
@@ -137,8 +144,8 @@ class FinOpeningExcelServiceTest {
             .thenThrow(new ServiceException("期初已确认锁定，请先反确认", 40902));
 
         ImportResult result = service.importRows(rows(
-            row("应收", "C001", "100", "2026-09-30", null),
-            row("应付", "S001", "200", "2026-09-30", null)));
+            row("应收", "C001", "100", null),
+            row("应付", "S001", "200", null)));
 
         assertEquals(2, result.getTotal());
         assertEquals(0, result.getSuccess());
@@ -146,30 +153,6 @@ class FinOpeningExcelServiceTest {
         assertEquals(1, result.getSkipped());
         assertTrue(result.getErrors().get(0).message().contains("整批已回滚"));
         verify(openingService, times(1)).save(any(FinOpeningBo.class));
-    }
-
-    @Test
-    void importRows_missingOrInvalidOpeningDate_rejected() {
-        ImportResult result = service.importRows(rows(
-            row("应收", "C001", "1", null, null),
-            row("应收", "C001", "1", "2026/13/01", null)));
-
-        assertEquals(2, result.getFailed());
-        assertTrue(result.getErrors().get(0).message().contains("期初截止日不能为空"));
-        assertTrue(result.getErrors().get(1).message().contains("期初截止日格式必须是 yyyy-MM-dd"));
-        verify(openingService, never()).save(any(FinOpeningBo.class));
-    }
-
-    @Test
-    void importRows_duplicateParty_rejectedToAvoidSilentOverwrite() {
-        // 同一单位只能有一条期初，导入两行会被 upsert 静默覆盖，必须整批拒绝
-        ImportResult result = service.importRows(rows(
-            row("应收", "C001", "100", "2026-09-30", null),
-            row("应收", "C001", "200", "2026-09-30", null)));
-
-        assertEquals(1, result.getFailed());
-        assertTrue(result.getErrors().get(0).message().contains("往来单位重复"));
-        verify(openingService, never()).save(any(FinOpeningBo.class));
     }
 
     @Test
@@ -189,12 +172,12 @@ class FinOpeningExcelServiceTest {
         ErpCustomer customer = new ErpCustomer();
         customer.setId(9L);
         customer.setCode("C001");
-        when(customerMapper.selectById(9L)).thenReturn(customer);
+        when(customerMapper.selectByIds(List.of(9L))).thenReturn(List.of(customer));
 
         ErpSupplier supplier = new ErpSupplier();
         supplier.setId(10L);
         supplier.setCode("S001");
-        when(supplierMapper.selectById(10L)).thenReturn(supplier);
+        when(supplierMapper.selectByIds(List.of(10L))).thenReturn(List.of(supplier));
 
         List<FinOpeningExportVo> exportRows = service.toExportRows(List.of(ar, ap));
 
@@ -206,14 +189,173 @@ class FinOpeningExcelServiceTest {
         assertEquals("S001", exportRows.get(1).getPartyCode());
     }
 
+    @Test
+    void toExportRows_batches201DistinctIdsPerTypeWithoutDroppingOrReorderingRows() {
+        List<FinOpeningVo> rows = new ArrayList<>();
+        for (long id = 1; id <= 201; id++) {
+            rows.add(exportRow("AP", id));
+            rows.add(exportRow("AR", id));
+        }
+        rows.add(exportRow("AR", 201L));
+        rows.add(exportRow("AP", 201L));
+        when(customerMapper.selectByIds(any())).thenAnswer(invocation -> {
+            Collection<Long> ids = invocation.getArgument(0);
+            return ids.stream().sorted((left, right) -> Long.compare(right, left))
+                .map(id -> customer(id, "C" + id)).toList();
+        });
+        when(supplierMapper.selectByIds(any())).thenAnswer(invocation -> {
+            Collection<Long> ids = invocation.getArgument(0);
+            return ids.stream().sorted((left, right) -> Long.compare(right, left))
+                .map(id -> supplier(id, "S" + id)).toList();
+        });
+
+        List<FinOpeningExportVo> exported = service.toExportRows(rows);
+
+        assertEquals(404, exported.size());
+        for (int index = 0; index < rows.size(); index++) {
+            FinOpeningVo source = rows.get(index);
+            FinOpeningExportVo target = exported.get(index);
+            boolean ar = "AR".equals(source.getPartyType());
+            assertEquals((ar ? "C" : "S") + source.getPartyId(), target.getPartyCode());
+            assertEquals(ar ? "应收" : "应付", target.getPartyType());
+            assertSame(source.getAmount(), target.getAmount(), "不能转为 double、舍入或改变行顺序");
+            assertEquals(source.getRemark(), target.getRemark());
+        }
+        ArgumentCaptor<Collection<Long>> customerIds = ArgumentCaptor.forClass(Collection.class);
+        ArgumentCaptor<Collection<Long>> supplierIds = ArgumentCaptor.forClass(Collection.class);
+        verify(customerMapper, times(2)).selectByIds(customerIds.capture());
+        verify(supplierMapper, times(2)).selectByIds(supplierIds.capture());
+        List<Long> firstBatch = LongStream.rangeClosed(1, 200).boxed().toList();
+        assertEquals(firstBatch, List.copyOf(customerIds.getAllValues().get(0)));
+        assertEquals(firstBatch, List.copyOf(supplierIds.getAllValues().get(0)));
+        assertEquals(List.of(201L), List.copyOf(customerIds.getAllValues().get(1)));
+        assertEquals(List.of(201L), List.copyOf(supplierIds.getAllValues().get(1)));
+        verifyNoMoreInteractions(customerMapper, supplierMapper);
+        verifyNoInteractions(openingService);
+    }
+
+    @Test
+    void toExportRows_missingRecordsAndNullOrEmptyCodesStayUnchangedWithoutRetry() {
+        List<FinOpeningVo> rows = new ArrayList<>();
+        for (int repeat = 0; repeat < 3; repeat++) {
+            for (String type : List.of("AR", "AP")) {
+                rows.add(exportRow(type, 9L));  // 主数据不存在
+                rows.add(exportRow(type, 10L)); // 主数据存在，code 为 null
+                rows.add(exportRow(type, 11L)); // code 为空串
+            }
+        }
+        when(customerMapper.selectByIds(List.of(9L, 10L, 11L)))
+            .thenReturn(List.of(customer(10, null), customer(11, "")));
+        when(supplierMapper.selectByIds(List.of(9L, 10L, 11L)))
+            .thenReturn(List.of(supplier(10, null), supplier(11, "")));
+
+        List<FinOpeningExportVo> exported = service.toExportRows(rows);
+
+        assertEquals(18, exported.size());
+        for (int index = 0; index < exported.size(); index++) {
+            if (index % 3 == 2) {
+                assertEquals("", exported.get(index).getPartyCode());
+            } else {
+                assertNull(exported.get(index).getPartyCode());
+            }
+        }
+        verify(customerMapper).selectByIds(List.of(9L, 10L, 11L));
+        verify(supplierMapper).selectByIds(List.of(9L, 10L, 11L));
+        verifyNoMoreInteractions(customerMapper, supplierMapper);
+        verifyNoInteractions(openingService);
+    }
+
+    @Test
+    void toExportRows_keepsSameIdNamespacesChineseTypeFallbacksAndNullIds() {
+        List<FinOpeningVo> rows = new ArrayList<>();
+        for (String type : Arrays.asList("AR", "AP", "应收", "应付", "CUSTOM", null)) {
+            rows.add(exportRow(type, 9L));
+        }
+        rows.add(exportRow("AR", null));
+        rows.add(exportRow("AP", null));
+        when(customerMapper.selectByIds(List.of(9L))).thenReturn(List.of(customer(9, "C9")));
+        when(supplierMapper.selectByIds(List.of(9L))).thenReturn(List.of(supplier(9, "S9")));
+
+        List<FinOpeningExportVo> exported = service.toExportRows(rows);
+
+        assertEquals(Arrays.asList("应收", "应付", "应收", "应付", "CUSTOM", null, "应收", "应付"),
+            exported.stream().map(FinOpeningExportVo::getPartyType).toList());
+        assertEquals(Arrays.asList("C9", "S9", "S9", "S9", "S9", "S9", null, null),
+            exported.stream().map(FinOpeningExportVo::getPartyCode).toList());
+        for (int index = 0; index < rows.size(); index++) {
+            assertSame(rows.get(index).getAmount(), exported.get(index).getAmount());
+            assertEquals(rows.get(index).getRemark(), exported.get(index).getRemark());
+        }
+        verify(customerMapper).selectByIds(List.of(9L));
+        verify(supplierMapper).selectByIds(List.of(9L));
+        verifyNoMoreInteractions(customerMapper, supplierMapper);
+        verifyNoInteractions(openingService);
+    }
+
+    @Test
+    void toExportRows_emptyListDoesNotQueryAnyMapper() {
+        assertTrue(service.toExportRows(List.of()).isEmpty());
+        verifyNoInteractions(customerMapper, supplierMapper, openingService);
+    }
+
+    @Test
+    void importRows_missingOrInvalidOpeningDate_rejected() {
+        ImportResult result = service.importRows(rows(
+            row("应收", "C001", "1", null, null),
+            row("应收", "C001", "1", "2026/13/01", null)));
+        assertEquals(2, result.getFailed());
+        assertTrue(result.getErrors().get(0).message().contains("期初截止日不能为空"));
+        assertTrue(result.getErrors().get(1).message().contains("期初截止日格式必须是 yyyy-MM-dd"));
+        verify(openingService, never()).save(any(FinOpeningBo.class));
+    }
+
+    @Test
+    void importRows_duplicateParty_rejectedToAvoidSilentOverwrite() {
+        ImportResult result = service.importRows(rows(
+            row("应收", "C001", "100", "2020-09-30", null),
+            row("应收", "C001", "200", "2020-09-30", null)));
+        assertEquals(1, result.getFailed());
+        assertTrue(result.getErrors().get(0).message().contains("往来单位重复"));
+        verify(openingService, never()).save(any(FinOpeningBo.class));
+    }
+
+    private FinOpeningImportRow row(String type, String code, String amount, String date, String remark) {
+        FinOpeningImportRow row = row(type, code, amount, remark);
+        row.setOpeningDate(date);
+        return row;
+    }
+
     // ---------- 辅助 ----------
 
-    private FinOpeningImportRow row(String partyType, String partyCode, String amount, String openingDate, String remark) {
+    private FinOpeningVo exportRow(String type, Long id) {
+        FinOpeningVo row = new FinOpeningVo();
+        row.setPartyType(type);
+        row.setPartyId(id);
+        row.setAmount(new BigDecimal("9007199254740993.01"));
+        row.setRemark(type + "-" + id);
+        return row;
+    }
+
+    private ErpCustomer customer(long id, String code) {
+        ErpCustomer customer = new ErpCustomer();
+        customer.setId(id);
+        customer.setCode(code);
+        return customer;
+    }
+
+    private ErpSupplier supplier(long id, String code) {
+        ErpSupplier supplier = new ErpSupplier();
+        supplier.setId(id);
+        supplier.setCode(code);
+        return supplier;
+    }
+
+    private FinOpeningImportRow row(String partyType, String partyCode, String amount, String remark) {
         FinOpeningImportRow row = new FinOpeningImportRow();
         row.setPartyType(partyType);
         row.setPartyCode(partyCode);
         row.setAmount(amount);
-        row.setOpeningDate(openingDate);
+        row.setOpeningDate("2020-09-30");
         row.setRemark(remark);
         return row;
     }

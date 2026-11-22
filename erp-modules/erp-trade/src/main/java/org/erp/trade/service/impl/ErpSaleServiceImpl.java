@@ -14,6 +14,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.common.sequence.SequenceService;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.master.domain.ErpCustomer;
 import org.erp.master.domain.ErpProduct;
 import org.erp.master.domain.bo.ErpProductBo;
@@ -85,6 +86,7 @@ public class ErpSaleServiceImpl implements IErpSaleService {
     private final SequenceService sequenceService;
     private final IFinArApService finArApService;
     private final IErpOrderProgressService orderProgressService;
+    private final IFinOpeningGuardService openingGuardService;
 
     @Override
     public TableDataInfo<ErpSaleVo> selectPage(String keyword, Long customerId, String status, PageQuery pageQuery) {
@@ -217,7 +219,15 @@ public class ErpSaleServiceImpl implements IErpSaleService {
         List<ErpSaleItem> items = itemMapper.selectList(new LambdaQueryWrapper<ErpSaleItem>()
             .eq(ErpSaleItem::getOrderId, orderId)
             .orderByAsc(ErpSaleItem::getId));
-        List<ErpSaleVo.ItemVo> result = new ArrayList<>();
+        List<Long> productIds = items.stream().map(ErpSaleItem::getProductId)
+            .filter(Objects::nonNull).filter(id -> id != 0L).distinct().toList();
+        Map<Long, ErpProduct> products = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            for (ErpProduct product : productMapper.selectByIds(productIds)) {
+                products.put(product.getId(), product);
+            }
+        }
+        List<ErpSaleVo.ItemVo> result = new ArrayList<>(items.size());
         for (ErpSaleItem row : items) {
             ErpSaleVo.ItemVo vo = new ErpSaleVo.ItemVo();
             vo.setId(row.getId());
@@ -233,7 +243,7 @@ public class ErpSaleServiceImpl implements IErpSaleService {
             vo.setCostAmount(row.getCostAmount());
             vo.setGrossProfit(row.getGrossProfit());
             vo.setRemark(row.getRemark());
-            ErpProduct p = row.getProductId() == null || row.getProductId() == 0L ? null : productMapper.selectById(row.getProductId());
+            ErpProduct p = products.get(row.getProductId());
             if (p != null) {
                 vo.setProductCode(p.getCode());
                 vo.setProductName(p.getName());
@@ -242,7 +252,7 @@ public class ErpSaleServiceImpl implements IErpSaleService {
                 vo.setQtyScale(p.getQtyScale());
             }
             if (StringUtils.isNotBlank(row.getNewProductSnapshot())) {
-                // 现录现卖快照必须始终回传：确认后商品已回填，撤回再编辑保存仍靠快照重建 QUICK_IN 入库（DOC/26 §8.3）
+                // 现录现卖快照必须始终回传：确认后商品已回填，撤回再编辑保存仍靠它恢复 QUICK_IN 入库（DOC/26 §8.3）
                 ErpSaleBo.NewProduct np = readSnapshot(row.getNewProductSnapshot());
                 vo.setNewProduct(np);
                 if (p == null) {
@@ -451,7 +461,7 @@ public class ErpSaleServiceImpl implements IErpSaleService {
      * @return 确认后的单据；costWarnings 为成本为 0 的商品名（仅提示，不阻断）
      */
     private ErpSaleVo confirmInternal(ErpSale head) {
-        // 加锁顺序（DOC/31 §6.8.1）：执行单头 → 订单头 → 订单行 → 台账 → 库存
+        // 第一把锁仍是执行单头（DOC/31 §6.8.1），保存并确认也从锁定行取值。
         head = saleMapper.lockById(head.getId());
         if (head == null) {
             throw new ServiceException("销售单不存在");
@@ -466,6 +476,8 @@ public class ErpSaleServiceImpl implements IErpSaleService {
         // 确认前校验整行集、行归属与超发容差（DOC/31 §5.4 改动点 3、§6.7）
         orderProgressService.lockAndValidate(IErpOrderProgressService.TYPE_SALE, head.getSourceOrderId(),
             items.stream().map(row -> new IErpOrderProgressService.ExecLine(row.getSourceOrderItemId(), row.getQty())).toList());
+        // 沿用单头 → 订单头/行的顺序；在库存与台账写入前锁往来单位并校验期初。
+        openingGuardService.lockAndCheckBusinessDate("AR", head.getCustomerId(), head.getBizDate());
         // 再按 product_id 升序一次性锁齐库存行，避免两张单商品顺序相反时成环（§6.8.1 规则 3）
         inventoryService.lockStockRows(items.stream().map(ErpSaleItem::getProductId)
             .filter(productId -> productId != null && productId != 0L).toList());
@@ -480,17 +492,16 @@ public class ErpSaleServiceImpl implements IErpSaleService {
             // 现录现卖：快照行每次确认都补入库（撤回会反向冲销入库），首代确认时才建品
             Long productId = StringUtils.isNotBlank(row.getNewProductSnapshot())
                 ? confirmQuickProduct(head, row, seq) : row.getProductId();
-            BigDecimal snapshotCost = inventoryService.snapshotCost(productId);
+            // 用出库流水同一份锁定均价，不再按旧事务快照单独读取销售行成本。
+            BigDecimal snapshotCost = inventoryService.outbound("SALE", head.getNo(), head.getId(),
+                productId, defaultWarehouseId(), row.getQty(),
+                "CUSTOMER", head.getCustomerId(), head.getBizDate(), seq++);
             // 库存均价本身为不含税口径，直接加计每件运杂费，不做含税还原（与采购 lineCostPrice 的 NO_TAX 分支一致）
             BigDecimal freightPerUnit = row.getQty().compareTo(BigDecimal.ZERO) == 0 ? BigDecimal.ZERO
                 : freights.get(i).divide(row.getQty(), 4, RoundingMode.HALF_UP);
             BigDecimal unitCost = snapshotCost.add(freightPerUnit).setScale(4, RoundingMode.HALF_UP);
             BigDecimal costAmount = row.getQty().multiply(unitCost).setScale(2, RoundingMode.HALF_UP);
             BigDecimal profit = row.getAmount().subtract(costAmount);
-
-            inventoryService.outbound("SALE", head.getNo(), head.getId(),
-                productId, defaultWarehouseId(), row.getQty(),
-                "CUSTOMER", head.getCustomerId(), head.getBizDate(), seq++);
 
             row.setUnitCost(unitCost);
             row.setCostAmount(costAmount);

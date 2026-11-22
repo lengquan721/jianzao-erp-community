@@ -77,7 +77,7 @@
             @select-change="handleSelectionChange"
             @column-resize-change="(ctx: any) => saveColumnWidths('master-supplier/list', ctx.columnsWidth)"
           >
-            <template #openingPayable="{ row }">{{ row.openingPayable === undefined || row.openingPayable === null ? '-' : formatMoney(row.openingPayable) }}</template>
+            <template #openingPayable="{ row }">{{ openingAmountText(row.openingPayable) }}</template>
             <template #taxRate="{ row }">{{ formatPercent(row.taxRate) }}</template>
             <template #status="{ row }">
               <t-tag :theme="row.status === 1 ? 'success' : 'default'" size="small">{{ row.status === 1 ? '启用' : '停用' }}</t-tag>
@@ -143,7 +143,7 @@
         </t-dialog>
 
         <!-- 导入结果 -->
-        <t-dialog v-model:visible="importResult.visible" header="导入结果" width="620px" attach="body">
+        <t-dialog v-model:visible="importResult.visible" header="导入结果" width="620px" attach="body" :destroy-on-close="true">
           <t-descriptions v-if="importResult.data" :column="4" bordered size="small" :items="importSummaryItems" />
           <t-alert
             v-if="importResult.data && importResult.data.failed === 0"
@@ -192,14 +192,23 @@
                   <t-input v-model="form.phone" placeholder="请输入联系电话" />
                 </t-form-item>
               </t-col>
-                <t-col :span="6">
-                  <t-form-item label="期初应付" help="以财务→期初往来确认的期初为准，此处不可编辑">
-                    <t-input :value="formatMoney(openingPayableDisplay)" disabled />
-                  </t-form-item>
-                </t-col>
+              <t-col :span="6">
+                <t-form-item label="期初应付" help="以财务→期初往来确认的期初为准，此处不可编辑">
+                  <t-input :value="openingAmountText(openingPayableDisplay)" disabled />
+                </t-form-item>
+              </t-col>
               <t-col :span="6">
                 <t-form-item label="税率" name="taxRate">
-                  <t-input-number v-model="form.taxRate" :decimal-places="2" :min="0" :max="100" :allow-input-over-limit="false" theme="normal" align="right" style="width: 100%" />
+                  <t-input-number
+                    v-model="form.taxRate"
+                    :decimal-places="2"
+                    :min="0"
+                    :max="100"
+                    :allow-input-over-limit="false"
+                    theme="normal"
+                    align="right"
+                    style="width: 100%"
+                  />
                 </t-form-item>
               </t-col>
               <t-col :span="6">
@@ -238,11 +247,13 @@
 <script setup name="ErpSupplier" lang="ts">
 import { listSupplier, getSupplier, addSupplier, updateSupplier, delSupplier } from '@/api/erp/master';
 import type { ErpImportResult } from '@/api/erp/master';
-import type { ErpSupplierForm, ErpSupplierVO } from '@/api/erp/types';
-import { arApSummary } from '@/api/erp/finance';
-import { formatMoney, formatPercent } from '@/utils/erp/calc';
+import type { ErpAmount, ErpSupplierForm, ErpSupplierVO } from '@/api/erp/types';
+import { confirmedOpeningByPartyIds } from '@/api/erp/finance';
+import { formatPercent } from '@/utils/erp/calc';
+import { openingAmountText } from '@/utils/erp/openingDisplay';
 import { checkPermi } from '@/utils/permission';
 import { globalHeaders } from '@/utils/request';
+import { sanitizeImportMessage } from '@/utils/sanitizeImportMessage';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import { ChevronDownIcon, CloudUploadIcon, DeleteIcon, DownloadIcon, Edit1Icon, PlusIcon, UploadIcon } from 'tdesign-icons-vue-next';
@@ -255,8 +266,8 @@ interface SupplierQuery extends PageQuery {
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
 
 const supplierList = ref<ErpSupplierVO[]>([]);
-/** 期初应付只读展示值：来自台账 OPENING 汇总，不随表单提交 */
-const openingPayableDisplay = ref(0);
+/** 仅当前页有权读取的已确认期初；缺失不是0，不随表单提交。 */
+const openingPayableDisplay = ref<ErpAmount>();
 const loading = ref(true);
 const showSearch = ref(true);
 const ids = ref<Array<string | number>>([]);
@@ -361,39 +372,36 @@ const importSummaryItems = computed<any[]>(() => [
   { label: '失败', content: String(importResult.data?.failed ?? 0) }
 ]);
 
-/** 查询供应商列表 */
+let listRequest = 0;
+onBeforeUnmount(() => {
+  ++listRequest;
+});
+/** 主数据保持旧分页；期初仅请求此页ID，无权、失败、遗漏一律未知。 */
 const getList = async () => {
+  const current = ++listRequest;
   loading.value = true;
   try {
-    const res = await listSupplier(queryParams.value);
-    const rows: ErpSupplierVO[] = res.rows ?? [];
-    // 期初应付只认台账 OPENING 汇总，不再读供应商档案字段，避免两处期初不一致。
-    // summary 需要 erp:finance:list，缺权角色直接按未加载展示，避免每次刷新弹 403。
-    if (!checkPermi(['erp:finance:list'])) {
-      rows.forEach((row) => {
-        row.openingPayable = undefined;
-      });
-    } else {
-      try {
-        const summary = await arApSummary('AP');
-        const openings = new Map<string, number>(
-          (summary.data?.parties ?? []).map((p) => [String(p.partyId), Number(p.opening ?? 0)] as [string, number])
-        );
-        rows.forEach((row) => {
-          row.openingPayable = openings.get(String(row.id));
-        });
-      } catch {
-        rows.forEach((row) => {
-          row.openingPayable = undefined;
-        });
-      }
-    }
+    const res = await listSupplier({ ...queryParams.value });
+    if (current !== listRequest) return;
+    const rows: ErpSupplierVO[] = (res.rows ?? []).map((row) => ({ ...row, openingPayable: undefined }));
     supplierList.value = rows;
     total.value = res.total ?? 0;
-    // 受控选中：换数据后清空勾选，保持 EP 的 el-table「重取即丢选中」行为
     ids.value = [];
+    if (rows.length && checkPermi(['erp:finance:list'])) {
+      try {
+        const result = await confirmedOpeningByPartyIds(
+          'AP',
+          rows.map((row) => row.id)
+        );
+        if (current !== listRequest || result.code !== 200 || !Array.isArray(result.data)) return;
+        const openings = new Map(result.data.map((p) => [String(p.partyId), p.amount]));
+        supplierList.value = rows.map((row) => ({ ...row, openingPayable: openings.get(String(row.id)) }));
+      } catch {
+        // 不回退全量summary；未知不冒充0，主数据仍可使用。
+      }
+    }
   } finally {
-    loading.value = false;
+    if (current === listRequest) loading.value = false;
   }
 };
 
@@ -420,8 +428,8 @@ const handleSelectionChange = (keys: Array<string | number>) => {
 /** 表单重置 */
 const reset = () => {
   form.value = { ...initFormData };
-  openingPayableDisplay.value = 0;
-  supplierFormRef.value?.reset();
+  openingPayableDisplay.value = undefined;
+  supplierFormRef.value?.clearValidate();
 };
 
 /** 新增按钮操作 */
@@ -437,10 +445,10 @@ const handleUpdate = async (row?: ErpSupplierVO) => {
   const id = row?.id ?? ids.value[0];
   const res = await getSupplier(id);
   const detail = res.data;
-  Object.assign(form.value, detail);
-  // 期初应付取列表里已按台账汇总后的值，不读档案字段
+  // 仅复制可编辑字段，详情中的历史openingPayable及其它只读字段不得混入提交。
+  Object.assign(form.value, Object.fromEntries((Object.keys(initFormData) as Array<keyof ErpSupplierForm>).map((key) => [key, detail[key]])));
   const listed = supplierList.value.find((row) => String(row.id) === String(id));
-  openingPayableDisplay.value = Number(listed?.openingPayable ?? 0);
+  openingPayableDisplay.value = listed?.openingPayable;
   form.value.taxRate = Number(detail.taxRate ?? 0);
   form.value.status = detail.status ?? 1;
   dialog.visible = true;
@@ -518,10 +526,13 @@ const handleFileSuccess = (ctx: any) => {
   upload.open = false;
   uploadFileList.value = [];
   if (!response || response.code !== 200 || !response.data) {
-    proxy?.$modal.msgError(response?.msg || '导入失败，请检查文件内容');
+    proxy?.$modal.msgError(sanitizeImportMessage(response?.msg) || '导入失败，请检查文件内容');
     return;
   }
-  importResult.data = response.data;
+  importResult.data = {
+    ...response.data,
+    errors: response.data.errors?.map((error) => ({ ...error, message: sanitizeImportMessage(error.message) })) ?? []
+  };
   importResult.visible = true;
   getList();
 };
@@ -529,7 +540,7 @@ const handleFileSuccess = (ctx: any) => {
 /** 文件上传失败：t-upload 回调给 { file, response }，优先取后端 msg */
 const handleFileError = (ctx: any) => {
   upload.isUploading = false;
-  proxy?.$modal.msgError(ctx?.response?.msg || '导入失败，请检查网络或文件');
+  proxy?.$modal.msgError(sanitizeImportMessage(ctx?.response?.msg) || '导入失败，请检查网络或文件');
 };
 
 /** 提交上传文件：t-upload 关闭自动上传后由按钮触发，无参即提交全部待上传文件 */

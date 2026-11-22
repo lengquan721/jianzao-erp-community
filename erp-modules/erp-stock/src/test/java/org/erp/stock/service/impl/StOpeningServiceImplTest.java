@@ -158,20 +158,55 @@ class StOpeningServiceImplTest {
     }
 
     @Test
-    void listAll_fillsProductInfo() {
-        StOpening row = openingRow("DRAFT");
-        when(openingMapper.selectList(any(Wrapper.class))).thenReturn(List.of(row));
-        ErpProduct p = new ErpProduct();
-        p.setId(301L);
-        p.setCode("YL001");
-        p.setName("铝板");
-        when(productMapper.selectById(301L)).thenReturn(p);
+    void pageDetails_keepsDatabaseProjectionAndTotal_withoutNameNPlusOne() {
+        StOpeningVo row = new StOpeningVo();
+        row.setId(1L);
+        row.setProductCode("YL001");
+        row.setProductName("铝板");
+        row.setWarehouseCode("WH1");
+        row.setWarehouseName("主仓");
+        row.setStatus("DRAFT");
+        when(openingMapper.countDetails(1L)).thenReturn(151L);
+        when(openingMapper.selectDetails(1L, 100, 50)).thenReturn(List.of(row));
 
-        var list = service.listAll(1L);
+        var page = service.pageDetails(1L, 3, 50);
 
-        assertEquals(1, list.size());
-        assertEquals("YL001", list.get(0).getProductCode());
-        assertEquals("铝板", list.get(0).getProductName());
+        assertEquals(151, page.getTotal());
+        assertEquals(1, page.getRows().size());
+        assertEquals("YL001", page.getRows().get(0).getProductCode());
+        assertEquals("铝板", page.getRows().get(0).getProductName());
+        assertEquals("主仓", page.getRows().get(0).getWarehouseName());
+        assertEquals("草稿", page.getRows().get(0).getStatusText());
+        verify(productMapper, never()).selectById(any());
+        verify(openingMapper, never()).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    void pageDetails_outOfRange_emptyNotFirstPage() {
+        when(openingMapper.countDetails(null)).thenReturn(1L);
+        var page = service.pageDetails(null, 2, 50);
+        assertEquals(1, page.getTotal());
+        assertTrue(page.getRows().isEmpty());
+        verify(openingMapper, never()).selectDetails(any(), org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    void export_limitIsIndependentOfUiPaging_noSilentTruncation() {
+        StOpeningVo row = new StOpeningVo();
+        row.setStatus("DRAFT");
+        when(openingMapper.selectDetails(null, 0, 5001)).thenReturn(java.util.Collections.nCopies(5000, row));
+        assertEquals(5000, service.listForExport(null).size());
+        when(openingMapper.selectDetails(null, 0, 5001)).thenReturn(java.util.Collections.nCopies(5001, row));
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.listForExport(null));
+        assertTrue(ex.getMessage().contains("5000"));
+    }
+
+    @Test
+    void pageDetails_invalidPaging_rejectedBeforeQuery() {
+        assertThrows(ServiceException.class, () -> service.pageDetails(null, 0, 10));
+        assertThrows(ServiceException.class, () -> service.pageDetails(null, 1, 101));
+        assertThrows(ServiceException.class, () -> service.pageDetails(null, 1, -1));
+        org.mockito.Mockito.verifyNoInteractions(openingMapper, productMapper);
     }
 
     @Test

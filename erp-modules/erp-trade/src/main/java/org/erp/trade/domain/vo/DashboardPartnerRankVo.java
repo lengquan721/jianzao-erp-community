@@ -67,7 +67,7 @@ public class DashboardPartnerRankVo {
         private BigDecimal grossMargin;
 
         /**
-         * 本月收款（客户口径）
+         * 本月收款（客户口径；negative=1 退款按负数）
          */
         private BigDecimal receiptAmount;
 

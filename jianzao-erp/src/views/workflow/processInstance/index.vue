@@ -100,7 +100,13 @@
             <template #operation="{ row }">
               <div class="instance-operations">
                 <!-- el-popover → t-popup：默认插槽是触发器、#content 才是面板（DOC/35 §3） -->
-                <t-popup v-if="tab === 'running'" trigger="click" placement="left" :visible="popoverRowId === row.id" @visible-change="(v: boolean) => onPopoverVisibleChange(v, row.id)">
+                <t-popup
+                  v-if="tab === 'running'"
+                  trigger="click"
+                  placement="left"
+                  :visible="popoverRowId === row.id"
+                  @visible-change="(v: boolean) => onPopoverVisibleChange(v, row.id)"
+                >
                   <!-- t-popup 的 trigger=click 已在触发器上自带 show/hide 切换，按钮不再另挂 @click，避免两次 toggle -->
                   <t-button theme="danger" size="small">
                     <template #icon><CloseCircleIcon /></template>
@@ -131,12 +137,25 @@
               </div>
             </template>
           </t-table>
-          <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="handleQuery" />
+          <pagination
+            v-show="total > 0"
+            v-model:page="queryParams.pageNum"
+            v-model:limit="queryParams.pageSize"
+            :total="total"
+            @pagination="handleQuery"
+          />
         </t-card>
       </t-col>
     </t-row>
 
-    <t-dialog v-model:visible="processDefinitionDialog.visible" :header="processDefinitionDialog.title" width="70%" attach="body" :footer="false" destroy-on-close>
+    <t-dialog
+      v-model:visible="processDefinitionDialog.visible"
+      :header="processDefinitionDialog.title"
+      width="70%"
+      attach="body"
+      :footer="false"
+      destroy-on-close
+    >
       <t-table
         class="erp-table"
         row-key="id"
@@ -158,12 +177,22 @@
       </t-table>
     </t-dialog>
     <!-- 流程变量开始 -->
-    <t-dialog v-model:visible="variableVisible" :header="'流程变量'" width="60%" attach="body" :close-on-overlay-click="false" :footer="false" destroy-on-close>
+    <t-dialog
+      v-model:visible="variableVisible"
+      :header="'流程变量'"
+      width="60%"
+      attach="body"
+      :close-on-overlay-click="false"
+      :footer="false"
+      destroy-on-close
+    >
       <t-loading :loading="variableLoading">
         <t-card>
           <template #header>
             <div class="clearfix">
-              <span>流程定义名称：<t-tag theme="default">{{ processDefinitionName }}</t-tag></span>
+              <span
+                >流程定义名称：<t-tag theme="default">{{ processDefinitionName }}</t-tag></span
+              >
             </div>
           </template>
           <div class="max-h-500px overflow-y-auto">
@@ -255,7 +284,7 @@ const processDefinitionName = ref();
 // 模型定义表格数据
 const processInstanceList = ref<FlowInstanceVO[]>([]);
 const processDefinitionHistoryList = ref<Array<any>>([]);
-const categoryOptions = ref<CategoryOption[]>([]);
+const categoryOptions = ref<CategoryTreeVO[]>([]);
 const categoryName = ref('');
 
 const processDefinitionDialog = reactive<DialogOption>({

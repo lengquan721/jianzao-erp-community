@@ -111,6 +111,10 @@ public class ProductExcelService {
         List<ExcelRow<ProductImportRow>> rows;
         try (InputStream inputStream = file.getInputStream()) {
             rows = ExcelRowReader.read(inputStream, ProductImportRow.class);
+        } catch (ExcelRowReader.ImportLimitException e) {
+            ImportResult rejected = new ImportResult();
+            rejected.fail(e.rowNumber(), e.getMessage());
+            throw new ImportRollbackException(rejected);
         }
         ImportResult result = importRows(rows, updateSupport);
         if (result.getFailed() > 0) {
@@ -160,10 +164,10 @@ public class ProductExcelService {
             String categoryCode = CellValues.optional(data.getCategoryCode(), "商品分类编码", 32, errors);
             String supplierCode = CellValues.optional(data.getSupplierCode(), "供应商编码", 32, errors);
             String qtyScaleCode = CellValues.choice(data.getQtyScale(), QTY_SCALE_MAPPING, "数量精度", false, errors);
-            BigDecimal costPrice = CellValues.decimal(data.getCostPrice(), "参考成本", 4, false, errors);
-            BigDecimal purchasePrice = CellValues.decimal(data.getPurchasePrice(), "采购价", 4, false, errors);
+            BigDecimal costPrice = CellValues.decimal(data.getCostPrice(), "参考成本", 18, 4, false, errors);
+            BigDecimal purchasePrice = CellValues.decimal(data.getPurchasePrice(), "采购价", 18, 4, false, errors);
             String taxType = CellValues.choice(data.getTaxType(), TAX_TYPE_MAPPING, "发票类型", false, errors);
-            BigDecimal freight = CellValues.decimal(data.getFreight(), "运费", 4, false, errors);
+            BigDecimal freight = CellValues.decimal(data.getFreight(), "运费", 18, 4, false, errors);
             Integer status = CellValues.status(data.getStatus(), errors);
             String remark = CellValues.optional(data.getRemark(), "备注", 500, errors);
 
@@ -310,9 +314,8 @@ public class ProductExcelService {
      * @return 导出行
      */
     List<ProductExportVo> exportRows(String keyword, String type, Integer status, Long categoryId, Long supplierId) {
-        List<ErpProductVo> rows = productService
-            .selectPage(keyword, type, status, categoryId, supplierId, new PageQuery(EXPORT_LIMIT, 1))
-            .getRows();
+        List<ErpProductVo> rows = PageQuery.collectForExport(EXPORT_LIMIT, query ->
+            productService.selectPage(keyword, type, status, categoryId, supplierId, query).getRows());
         List<ProductExportVo> result = new ArrayList<>();
         if (rows == null) {
             return result;

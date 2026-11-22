@@ -28,7 +28,7 @@ public class DashboardTrendVo {
     private List<BigDecimal> cost = new ArrayList<>();
 
     /**
-     * 收款曲线（CONFIRMED fin_receipt 按月合计）
+     * 收款曲线（CONFIRMED fin_receipt 按月带符号合计；negative=1 退款按 -amount）
      */
     private List<BigDecimal> receipts = new ArrayList<>();
 

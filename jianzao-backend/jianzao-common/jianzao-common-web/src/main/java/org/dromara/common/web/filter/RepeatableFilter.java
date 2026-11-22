@@ -1,7 +1,6 @@
 package org.dromara.common.web.filter;
 
-import org.dromara.common.core.utils.StringUtils;
-import org.springframework.http.MediaType;
+import org.dromara.common.core.utils.RequestBodyLimits;
 
 import jakarta.servlet.*;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,8 +22,14 @@ public class RepeatableFilter implements Filter {
         throws IOException, ServletException {
         ServletRequest requestWrapper = null;
         if (request instanceof HttpServletRequest
-            && StringUtils.startsWithIgnoreCase(request.getContentType(), MediaType.APPLICATION_JSON_VALUE)) {
-            requestWrapper = new RepeatedlyRequestWrapper((HttpServletRequest) request, response);
+            && RequestBodyLimits.isJsonContentType(request.getContentType())) {
+            try {
+                requestWrapper = new RepeatedlyRequestWrapper((HttpServletRequest) request, response);
+            } catch (RequestBodyLimits.BodyTooLargeException e) {
+                ((jakarta.servlet.http.HttpServletResponse) response).sendError(
+                    jakarta.servlet.http.HttpServletResponse.SC_REQUEST_ENTITY_TOO_LARGE);
+                return;
+            }
         }
         if (null == requestWrapper) {
             chain.doFilter(request, response);

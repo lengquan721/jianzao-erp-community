@@ -3,11 +3,12 @@ package org.erp.fin.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.erp.fin.domain.vo.FinArApSummaryVo;
-import org.erp.fin.domain.vo.FinArApSourceVo;
+import org.erp.fin.domain.vo.FinArApSummaryPageVo;
 import org.erp.fin.domain.vo.FinArApVo;
+import org.erp.fin.domain.vo.FinArApSourceVo;
+import java.util.Collection;
 
 import java.math.BigDecimal;
-import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 
@@ -66,14 +67,25 @@ public interface IFinArApService {
     TableDataInfo<FinArApVo> selectPage(String partyType, Long partyId, String status, PageQuery pageQuery);
 
     /**
-     * S8 汇总：总应收/总应付 + 按客户/供应商分组明细（含期初拆分）。
+     * 兼容旧汇总形状：完整返回至多 5000 个往来单位，超过则明确拒绝，绝不截断。
+     * 交互页面应使用 summaryPage；金额始终为全部匹配非 VOID 台账的合计。
      */
     FinArApSummaryVo summary(String partyType);
 
+    /** 金额为全量数据库聚合，往来单位分组在数据库分页（每页 1..200）。 */
+    FinArApSummaryPageVo summaryPage(String partyType, int pageNum, int pageSize);
+
     /**
-     * S8 明细：单客户/供应商台账列表。
+     * 兼容旧明细：完整返回至多 5000 条非 VOID 明细，超过明确拒绝。
+     * 不隐式排除 SETTLED/负数行，不把第一页冒充完整列表。
      */
     List<FinArApVo> listByParty(String partyType, Long partyId);
+
+    /** 收/付款表单：完整返回至多 5000 条余额为正的非 VOID 台账，超限拒绝，不截断。 */
+    List<FinArApVo> listAllocatableByParty(String partyType, Long partyId);
+
+    /** 单客户/供应商明细在数据库分页；按业务日期、ID 升序，每页 1..200。 */
+    TableDataInfo<FinArApVo> pageByParty(String partyType, Long partyId, int pageNum, int pageSize);
 
     /**
      * 核销：累计 settled_amount 并推进状态（OPEN/PARTIAL → SETTLED）。
@@ -85,28 +97,25 @@ public interface IFinArApService {
      * 反核销：settled_amount 减回并回退状态（SETTLED → PARTIAL/OPEN）。
      * 校验：台账存在、反核销额 ≤ 已核销额。
      */
-    void unsettle(Long arApId, BigDecimal amount);
+    void unsettle(Long arApId, BigDecimal amount, String partyType, Long partyId);
 
     /**
-     * 按台账行 id 批量取来源信息（类型 + 业务单号）。
-     *
-     * 用于收付款单详情的核销明细回显：台账 id 是内部主键，用户认的是业务单号。
-     *
-     * @param arApIds 台账行 id 集合
-     * @return 来源信息列表；入参为空时返回空列表
+     * 对销售退货退款反核销：严格验证 AR、客户归属及 SALE 来源，金额不能超过已核销余额。
      */
-    List<FinArApSourceVo> listSourceInfo(Collection<Long> arApIds);
+    void unsettleSaleReturnRefund(Long arApId, BigDecimal amount, Long customerId, Long saleId);
 
     /**
-     * 统计期初截止日之前已确认的业务单据数：AR 为销售/销售退货/收款，AP 为采购/采购退货/付款。
-     *
-     * 期初金额表示截止日之前的账面余额，若该区间已有业务单据，对账单会把期初与台账重复累加，
-     * 因此期初确认前必须先拦截。
-     *
-     * @param partyType AR/AP
-     * @param partyId   客户/供应商ID
-     * @param before    时间上界（不含），由截止日次日的 00:00 换算
-     * @return 区间内已确认单据数，0 表示无重叠
+     * 撤回受控销售退货退款后恢复原 SALE 应收的已核销额。
      */
+    void settleSaleReturnRefund(Long arApId, BigDecimal amount, Long customerId, Long saleId);
+
+    /** 持统一往来锁后按当前值统计非 OPENING 台账及已确认收付款，时间上界不含。 */
     long countBusinessBefore(String partyType, Long partyId, Date before);
+
+    /** 来源回显必须绑定当前收/付款的方向和往来单位；数据库逐批至多 200 个去重 ID。 */
+    List<FinArApSourceVo> listSourceInfo(Collection<Long> arApIds, String partyType, Long partyId);
+
+    /** 旧签名仅保留二进制/源码契约；非空调用明确拒绝，不能推断授权范围。 */
+    @Deprecated
+    List<FinArApSourceVo> listSourceInfo(Collection<Long> arApIds);
 }

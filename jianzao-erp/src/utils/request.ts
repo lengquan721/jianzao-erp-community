@@ -26,6 +26,21 @@ export const globalHeaders = () => {
 
 axios.defaults.headers['Content-Type'] = 'application/json;charset=utf-8';
 axios.defaults.headers['clientid'] = import.meta.env.VITE_APP_CLIENT_ID;
+
+/**
+ * 防重复提交缓存的体积上限（字符数）。
+ * sessionStorage 总配额约 5MB，留一半余量给其他数据。
+ */
+const SUBMIT_CACHE_LIMIT = 512 * 1024;
+
+/** 写防重缓存：超配额时静默降级，不能因为缓存失败拦掉正常请求 */
+function safeSetSubmitCache(requestObj: { url?: string; data?: any; time: number }) {
+  try {
+    cache.session.setJSON('sessionObj', requestObj);
+  } catch {
+    /* 配额不足：放弃防重记录，请求照常发出 */
+  }
+}
 // 创建 axios 实例
 const service = axios.create({
   baseURL: import.meta.env.VITE_APP_BASE_API,
@@ -63,25 +78,32 @@ service.interceptors.request.use(
     }
 
     if (!isRepeatSubmit && (config.method === 'post' || config.method === 'put')) {
+      const rawData = typeof config.data === 'object' ? JSON.stringify(config.data) : config.data;
       const requestObj = {
         url: config.url,
-        data: typeof config.data === 'object' ? JSON.stringify(config.data) : config.data,
+        data: rawData,
         time: new Date().getTime()
       };
-      const sessionObj = cache.session.getJSON('sessionObj');
-      if (sessionObj === undefined || sessionObj === null || sessionObj === '') {
-        cache.session.setJSON('sessionObj', requestObj);
-      } else {
-        const s_url = sessionObj.url; // 请求地址
-        const s_data = sessionObj.data; // 请求数据
-        const s_time = sessionObj.time; // 请求时间
-        const interval = 500; // 间隔时间(ms)，小于此时间视为重复提交
-        if (s_data === requestObj.data && requestObj.time - s_time < interval && s_url === requestObj.url) {
-          const message = '数据正在处理，请勿重复提交';
-          console.warn(`[${s_url}]: ` + message);
-          return Promise.reject(new Error(message));
+      // sessionStorage 配额约 5MB，超大请求体（如内嵌 base64 图片的组件树）
+      // 写进去会抛 QuotaExceededError，整个请求被拦掉且没有任何提示。
+      // 这类请求体积大、不易在 500ms 内重复提交，直接跳过防重即可。
+      const tooLargeToCache = typeof rawData === 'string' && rawData.length > SUBMIT_CACHE_LIMIT;
+      if (!tooLargeToCache) {
+        const sessionObj = cache.session.getJSON('sessionObj');
+        if (sessionObj === undefined || sessionObj === null || sessionObj === '') {
+          safeSetSubmitCache(requestObj);
         } else {
-          cache.session.setJSON('sessionObj', requestObj);
+          const s_url = sessionObj.url; // 请求地址
+          const s_data = sessionObj.data; // 请求数据
+          const s_time = sessionObj.time; // 请求时间
+          const interval = 500; // 间隔时间(ms)，小于此时间视为重复提交
+          if (s_data === requestObj.data && requestObj.time - s_time < interval && s_url === requestObj.url) {
+            const message = '数据正在处理，请勿重复提交';
+            console.warn(`[${s_url}]: ` + message);
+            return Promise.reject(new Error(message));
+          } else {
+            safeSetSubmitCache(requestObj);
+          }
         }
       }
     }
@@ -141,16 +163,15 @@ service.interceptors.response.use(
         isRelogin.show = true;
         // TDesign DialogPlugin 返回实例而非 Promise，包装成真 Promise：确定 resolve、取消/关闭/ESC/遮罩均 reject，保持原 .then().catch() 链语义
         new Promise<void>((resolve, reject) => {
-          let reloginDialog: DialogInstance;
           let dismissed = false;
           // TDesign 取消会连带触发 onCancel 与 onClose，用标记保证只销毁一次；resolve/reject 本身只结算一次
-          const dismiss = () => {
+          const dismiss = (dialog: DialogInstance) => {
             if (dismissed) return;
             dismissed = true;
-            reloginDialog.hide();
-            reloginDialog.destroy();
+            dialog.hide();
+            dialog.destroy();
           };
-          reloginDialog = DialogPlugin.confirm({
+          const reloginDialog = DialogPlugin.confirm({
             attach: 'body',
             header: '系统提示',
             body: '登录状态已过期，您可以继续留在该页面，或者重新登录',
@@ -160,16 +181,16 @@ service.interceptors.response.use(
             closeOnEscKeydown: true,
             closeOnOverlayClick: true,
             onConfirm: () => {
-              dismiss();
+              dismiss(reloginDialog);
               resolve();
             },
             onCancel: () => {
-              dismiss();
+              dismiss(reloginDialog);
               reject('cancel');
             },
             // esc / 关闭按钮 / 点遮罩均触发 onClose
             onClose: () => {
-              dismiss();
+              dismiss(reloginDialog);
               reject('close');
             }
           });

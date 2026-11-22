@@ -8,12 +8,11 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.common.sequence.SequenceService;
-import org.erp.fin.domain.vo.FinArApVo;
-import org.erp.fin.domain.bo.FinReceiptBo;
-import org.erp.fin.domain.vo.FinReceiptVo;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.fin.service.IFinReceiptService;
 import org.erp.master.domain.ErpCustomer;
 import org.erp.master.domain.ErpProduct;
@@ -26,6 +25,7 @@ import org.erp.trade.domain.ErpSaleItem;
 import org.erp.trade.domain.ErpSaleReturn;
 import org.erp.trade.domain.ErpSaleReturnItem;
 import org.erp.trade.domain.bo.ErpSaleReturnBo;
+import org.erp.trade.domain.vo.ErpReturnQtyAggregateVo;
 import org.erp.trade.domain.vo.ErpSaleReturnVo;
 import org.erp.trade.mapper.ErpSaleItemMapper;
 import org.erp.trade.mapper.ErpSaleMapper;
@@ -34,11 +34,13 @@ import org.erp.trade.mapper.ErpSaleReturnMapper;
 import org.erp.trade.service.IErpOrderProgressService;
 import org.erp.trade.service.IErpSaleReturnService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -76,6 +78,7 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
     private final IFinReceiptService receiptService;
     private final SequenceService sequenceService;
     private final IErpOrderProgressService orderProgressService;
+    private final IFinOpeningGuardService openingGuardService;
 
     @Override
     public TableDataInfo<ErpSaleReturnVo> selectPage(String keyword, Long customerId, String status, PageQuery pageQuery) {
@@ -123,9 +126,10 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             .eq(ErpSaleItem::getOrderId, saleId)
             .orderByAsc(ErpSaleItem::getSeq));
         Map<Long, ErpProduct> products = loadProducts(items.stream().map(ErpSaleItem::getProductId).toList());
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(items.stream().map(ErpSaleItem::getId).toList(), null);
         List<ErpSaleReturnVo.ItemVo> result = new ArrayList<>();
         for (ErpSaleItem item : items) {
-            BigDecimal returned = returnedQty(item.getId());
+            BigDecimal returned = returnedByItem.getOrDefault(item.getId(), BigDecimal.ZERO);
             ErpSaleReturnVo.ItemVo vo = new ErpSaleReturnVo.ItemVo();
             vo.setSaleItemId(item.getId());
             vo.setProductId(item.getProductId());
@@ -174,6 +178,7 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
         vo.setReturnCostAmount(head.getReturnCostAmount());
         vo.setNeedRefund(head.getNeedRefund());
         vo.setRefundAmount(head.getRefundAmount());
+        vo.setRefundAccountId(head.getRefundAccountId());
         vo.setRefundReceiptId(head.getRefundReceiptId());
         vo.setRemark(head.getRemark());
         vo.setCreateTime(head.getCreateTime());
@@ -185,6 +190,10 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             .eq(ErpSaleReturnItem::getOrderId, orderId)
             .orderByAsc(ErpSaleReturnItem::getSeq));
         Map<Long, ErpProduct> products = loadProducts(items.stream().map(ErpSaleReturnItem::getProductId).toList());
+        List<Long> originalItemIds = items.stream().map(ErpSaleReturnItem::getSaleItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpSaleItem> originals = loadSaleItems(originalItemIds);
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(originalItemIds, null);
         List<ErpSaleReturnVo.ItemVo> result = new ArrayList<>();
         for (ErpSaleReturnItem row : items) {
             ErpSaleReturnVo.ItemVo vo = new ErpSaleReturnVo.ItemVo();
@@ -198,9 +207,9 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             vo.setReturnCost(row.getReturnCost());
             vo.setRemark(row.getRemark());
             // 详情页需展示「原行数量 / 已退 / 可退」：按原销售行补算，口径与 originalItems 一致
-            ErpSaleItem original = row.getSaleItemId() == null ? null : saleItemMapper.selectById(row.getSaleItemId());
+            ErpSaleItem original = originals.get(row.getSaleItemId());
             if (original != null) {
-                BigDecimal returned = returnedQty(original.getId());
+                BigDecimal returned = returnedByItem.getOrDefault(original.getId(), BigDecimal.ZERO);
                 vo.setOriginalQty(original.getQty());
                 vo.setReturnedQty(returned);
                 vo.setReturnableQty(original.getQty().subtract(returned));
@@ -220,48 +229,68 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
 
     private Map<Long, ErpProduct> loadProducts(List<Long> productIds) {
         Map<Long, ErpProduct> products = new HashMap<>();
-        if (productIds.isEmpty()) {
+        List<Long> ids = productIds.stream().filter(id -> id != null).distinct().toList();
+        if (ids.isEmpty()) {
             return products;
         }
-        for (ErpProduct p : productMapper.selectByIds(productIds)) {
+        for (ErpProduct p : productMapper.selectByIds(ids)) {
             products.put(p.getId(), p);
         }
         return products;
     }
 
-    /**
-     * 原行已退量：Σ(CONFIRMED 退货单) 该 sale_item_id 的 qty（按退货单头状态过滤）。
-     */
-    private BigDecimal returnedQty(Long saleItemId) {
-        List<ErpSaleReturnItem> rows = itemMapper.selectList(new LambdaQueryWrapper<ErpSaleReturnItem>()
-            .eq(ErpSaleReturnItem::getSaleItemId, saleItemId));
-        BigDecimal total = BigDecimal.ZERO;
-        for (ErpSaleReturnItem row : rows) {
-            ErpSaleReturn head = returnMapper.selectById(row.getOrderId());
-            if (head != null && "CONFIRMED".equals(head.getStatus())) {
-                total = total.add(row.getQty());
-            }
+    private Map<Long, ErpSaleItem> loadSaleItems(Collection<Long> saleItemIds) {
+        Map<Long, ErpSaleItem> originals = new HashMap<>();
+        if (saleItemIds.isEmpty()) {
+            return originals;
         }
-        return total;
+        for (ErpSaleItem original : saleItemMapper.selectByIds(saleItemIds)) {
+            originals.put(original.getId(), original);
+        }
+        return originals;
+    }
+
+    /**
+     * 当前租户下按原销售行汇总 CONFIRMED 且未软删的退货明细；DRAFT/VOID 不占用可退量。
+     */
+    private Map<Long, BigDecimal> loadReturnedQty(Collection<Long> saleItemIds, Long excludeReturnId) {
+        Map<Long, BigDecimal> returned = new HashMap<>();
+        List<Long> ids = saleItemIds.stream().filter(id -> id != null).distinct().toList();
+        if (ids.isEmpty()) {
+            return returned;
+        }
+        for (ErpReturnQtyAggregateVo aggregate : itemMapper.sumConfirmedReturnedQty(
+            ids, currentTenantId(), excludeReturnId)) {
+            returned.put(aggregate.getOriginalItemId(), aggregate.getReturnedQty());
+        }
+        return returned;
+    }
+
+    private String currentTenantId() {
+        String tenantId = TenantHelper.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ServiceException("缺少租户上下文，拒绝查询退货数量", 40901);
+        }
+        return tenantId;
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ErpSaleReturnVo insert(ErpSaleReturnBo bo) {
         ErpSaleReturn head = new ErpSaleReturn();
         head.setNo(sequenceService.nextNo("XT"));
         saveHead(head, bo);
         saveItems(head, bo);
         if (Boolean.TRUE.equals(bo.getConfirm())) {
-            confirmInternal(head, bo);
+            confirmInternal(head.getId());
         }
         return selectById(head.getId());
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ErpSaleReturnVo update(Long id, ErpSaleReturnBo bo) {
-        ErpSaleReturn head = returnMapper.selectById(id);
+        ErpSaleReturn head = returnMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("退货单不存在");
         }
@@ -273,7 +302,7 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             .eq(ErpSaleReturnItem::getOrderId, id));
         saveItems(head, bo);
         if (Boolean.TRUE.equals(bo.getConfirm())) {
-            confirmInternal(head, bo);
+            confirmInternal(id);
         }
         return selectById(id);
     }
@@ -291,9 +320,11 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
         head.setSaleNo(sale.getNo());
         head.setCustomerId(sale.getCustomerId());
         head.setBizDate(bo.getBizDate());
-        head.setNeedRefund(Boolean.TRUE.equals(bo.getNeedRefund()) ? 1 : 0);
-        head.setRefundAmount(Boolean.TRUE.equals(bo.getNeedRefund()) && bo.getRefundAmount() != null
+        boolean refund = Boolean.TRUE.equals(bo.getNeedRefund());
+        head.setNeedRefund(refund ? 1 : 0);
+        head.setRefundAmount(refund && bo.getRefundAmount() != null
             ? bo.getRefundAmount().setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO);
+        head.setRefundAccountId(refund ? bo.getRefundAccountId() : null);
         head.setRemark(bo.getRemark());
         head.setStatus("DRAFT");
         if (head.getId() == null) {
@@ -305,13 +336,16 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
 
     private void saveItems(ErpSaleReturn head, ErpSaleReturnBo bo) {
         Set<Long> saleItemIds = new HashSet<>();
+        List<Long> originalItemIds = bo.getItems().stream().map(ErpSaleReturnBo.ItemBo::getSaleItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpSaleItem> originals = loadSaleItems(originalItemIds);
         BigDecimal amountTotal = BigDecimal.ZERO;
         int seq = 0;
         for (ErpSaleReturnBo.ItemBo item : bo.getItems()) {
             if (!saleItemIds.add(item.getSaleItemId())) {
                 throw new ServiceException("明细中重复引用原销售行：" + item.getSaleItemId());
             }
-            ErpSaleItem original = saleItemMapper.selectById(item.getSaleItemId());
+            ErpSaleItem original = originals.get(item.getSaleItemId());
             if (original == null || !original.getOrderId().equals(head.getSaleId())) {
                 throw new ServiceException("原销售明细行不属于该原单：" + item.getSaleItemId());
             }
@@ -332,22 +366,15 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public void confirm(Long id) {
-        // 第一把锁必须是退货单自身单头（DOC/31 §6.8.2 防线 2）
-        ErpSaleReturn head = returnMapper.lockById(id);
-        if (head == null) {
-            throw new ServiceException("退货单不存在");
-        }
-        if (!"DRAFT".equals(head.getStatus())) {
-            throw new ServiceException("仅草稿可确认", 40902);
-        }
-        confirmInternal(head, null);
+        confirmInternal(id);
     }
 
-    private void confirmInternal(ErpSaleReturn head, ErpSaleReturnBo bo) {
-        // 1. 锁自身单头（insert(confirm=true) 也要走这把锁），再锁原单头行，强校验原单状态与累计可退
-        head = returnMapper.lockById(head.getId());
+    private void confirmInternal(Long id) {
+        // 保存并确认可能已读过原单。READ COMMITTED 保证拿到原单锁后看见前序已提交退货，
+        // 不在 REPEATABLE READ 的旧快照上继续累加可退数量。
+        ErpSaleReturn head = returnMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("退货单不存在");
         }
@@ -355,9 +382,8 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
         if (!"DRAFT".equals(head.getStatus())) {
             throw new ServiceException("仅草稿可确认", 40902);
         }
-        returnMapper.lockSaleForReturn(head.getSaleId());
-        ErpSale sale = saleMapper.selectById(head.getSaleId());
-        if (sale == null || !"CONFIRMED".equals(sale.getStatus())) {
+        ErpSale sale = saleMapper.lockById(head.getSaleId());
+        if (sale == null || !"CONFIRMED".equals(sale.getStatus()) || !sale.getCustomerId().equals(head.getCustomerId())) {
             throw new ServiceException("原销售单未确认或已撤回，不能退货", 40902);
         }
         // 2. 解析来源订单：为 NULL 直接跳过订单逻辑；非空时先锁订单头、再按 id 升序锁订单行（DOC/31 §5.4 改动点 5、§6.8.1）
@@ -366,30 +392,27 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
         List<ErpSaleReturnItem> items = itemMapper.selectList(new LambdaQueryWrapper<ErpSaleReturnItem>()
             .eq(ErpSaleReturnItem::getOrderId, head.getId())
             .orderByAsc(ErpSaleReturnItem::getSeq));
-        checkReturnable(head, items);
+        Map<Long, ErpSaleItem> originalRows = checkReturnable(head, items);
 
-        // 3. 退款前置校验（金额 ≤ 退货总额）
-        boolean needRefund = Integer.valueOf(1).equals(head.getNeedRefund());
-        BigDecimal refundAmount = needRefund ? head.getRefundAmount() : BigDecimal.ZERO;
-        Long refundAccountId = null;
-        if (needRefund) {
-            if (bo != null) {
-                refundAccountId = bo.getRefundAccountId();
+        // 退货单头、原单头和订单头/行已依序加锁；先校验锁定退货单的日期，再处理退款、台账与库存。
+        openingGuardService.lockAndCheckBusinessDate("AR", head.getCustomerId(), head.getBizDate());
+
+        // 3. 先处理台账，再动库存；退款读取锁定退货单上的账户与金额，单独确认与保存并确认共用此路径。
+        if (Integer.valueOf(1).equals(head.getNeedRefund())) {
+            if (head.getRefundAccountId() == null) {
+                throw new ServiceException("退款必须选择结算账户，旧草稿请编辑后重试", 40902);
             }
-            if (refundAmount.compareTo(BigDecimal.ZERO) > 0 && refundAccountId == null) {
-                throw new ServiceException("退款必须选择结算账户");
-            }
-            if (refundAmount.compareTo(head.getTotalAmount()) > 0) {
-                throw new ServiceException("退款金额不能超过退货总额", 40902);
-            }
+            head.setRefundReceiptId(receiptService.insertSaleReturnRefund(head.getId()));
         }
+        arApService.createBySaleReturn(head.getId(), head.getNo(), head.getCustomerId(),
+            head.getTotalAmount().negate(), head.getBizDate());
 
         // 4. 库存回增（原行 unit_cost 快照走 inbound）；动库存前按 product_id 升序锁齐库存行（§6.8.1 规则 3）
         inventoryService.lockStockRows(items.stream().map(ErpSaleReturnItem::getProductId).toList());
         int seq = 0;
         BigDecimal costTotal = BigDecimal.ZERO;
         for (ErpSaleReturnItem row : items) {
-            ErpSaleItem original = saleItemMapper.selectById(row.getSaleItemId());
+            ErpSaleItem original = originalRows.get(row.getSaleItemId());
             BigDecimal unitCost = original.getUnitCost() == null ? BigDecimal.ZERO : original.getUnitCost();
             inventoryService.inbound("SALE_RETURN", head.getNo(), head.getId(), row.getProductId(),
                 warehouseService.defaultWarehouseId(), row.getQty(), unitCost,
@@ -400,34 +423,6 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             costTotal = costTotal.add(row.getReturnCost());
         }
         head.setReturnCostAmount(costTotal.setScale(2, RoundingMode.HALF_UP));
-
-        // 5. 应收红冲：负数 AR 行（不动原单台账）
-        arApService.createBySaleReturn(head.getId(), head.getNo(), head.getCustomerId(),
-            head.getTotalAmount().negate(), head.getBizDate());
-
-        // 6. 可选退款：红字收款单（negative=1，对原单 AR 行 unsettle）
-        if (needRefund && refundAmount.compareTo(BigDecimal.ZERO) > 0) {
-            FinArApVo originalAr = arApService.getBySource("SALE", head.getSaleId());
-            if (originalAr == null) {
-                throw new ServiceException("原销售单应收台账不存在，无法退款", 40902);
-            }
-            FinReceiptBo receiptBo = new FinReceiptBo();
-            receiptBo.setCustomerId(head.getCustomerId());
-            receiptBo.setBizDate(head.getBizDate());
-            receiptBo.setAmount(refundAmount);
-            receiptBo.setNegative(true);
-            receiptBo.setAccountId(refundAccountId);
-            receiptBo.setRemark("销售退货退款 " + head.getNo());
-            receiptBo.setConfirm(true);
-            List<FinReceiptBo.AllocationBo> allocs = new ArrayList<>();
-            FinReceiptBo.AllocationBo alloc = new FinReceiptBo.AllocationBo();
-            alloc.setArApId(originalAr.getId());
-            alloc.setAmount(refundAmount);
-            allocs.add(alloc);
-            receiptBo.setAllocations(allocs);
-            FinReceiptVo receipt = receiptService.insert(receiptBo);
-            head.setRefundReceiptId(receipt.getId());
-        }
 
         // 状态 CAS：只有 DRAFT 能改成 CONFIRMED，并发双击/跨节点时第二个请求返回 40902（§6.8.2 防线 3）
         head.setConfirmedAt(new Date());
@@ -449,35 +444,30 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
     /**
      * 强校验累计可退：确认事务内，排除自身已确认行后重算占用。
      */
-    private void checkReturnable(ErpSaleReturn head, List<ErpSaleReturnItem> items) {
-        boolean selfConfirmed = "CONFIRMED".equals(head.getStatus());
+    private Map<Long, ErpSaleItem> checkReturnable(ErpSaleReturn head, List<ErpSaleReturnItem> items) {
+        List<Long> saleItemIds = items.stream().map(ErpSaleReturnItem::getSaleItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpSaleItem> originals = loadSaleItems(saleItemIds);
         for (ErpSaleReturnItem row : items) {
-            ErpSaleItem original = saleItemMapper.selectById(row.getSaleItemId());
-            if (original == null) {
+            if (originals.get(row.getSaleItemId()) == null) {
                 throw new ServiceException("原销售明细行不存在：" + row.getSaleItemId());
             }
-            BigDecimal returned = BigDecimal.ZERO;
-            List<ErpSaleReturnItem> allReturnRows = itemMapper.selectList(new LambdaQueryWrapper<ErpSaleReturnItem>()
-                .eq(ErpSaleReturnItem::getSaleItemId, row.getSaleItemId()));
-            for (ErpSaleReturnItem other : allReturnRows) {
-                if (other.getId().equals(row.getId()) && selfConfirmed) {
-                    continue;
-                }
-                ErpSaleReturn otherHead = returnMapper.selectById(other.getOrderId());
-                if (otherHead != null && "CONFIRMED".equals(otherHead.getStatus())) {
-                    returned = returned.add(other.getQty());
-                }
-            }
+        }
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(saleItemIds, head.getId());
+        for (ErpSaleReturnItem row : items) {
+            ErpSaleItem original = originals.get(row.getSaleItemId());
+            BigDecimal returned = returnedByItem.getOrDefault(row.getSaleItemId(), BigDecimal.ZERO);
             BigDecimal returnable = original.getQty().subtract(returned);
             if (row.getQty().compareTo(returnable) > 0) {
                 throw new ServiceException("累计退货数量超过原行可退数量（原行 " + original.getQty()
                     + "，已退 " + returned + "，本次 " + row.getQty() + "）", 40902);
             }
         }
+        return originals;
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public void withdraw(Long id) {
         // 单据头锁定读：加锁顺序 退货单头 → 原执行单头 → 订单头 → 订单行 → 台账 → 库存
         ErpSaleReturn head = returnMapper.lockById(id);
@@ -488,15 +478,15 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
             throw new ServiceException("仅已确认单据可撤回", 40902);
         }
         // 先锁原执行单头，再由原执行单解析来源订单，之后才动台账与库存（DOC/31 §6.8.1 退货侧同样）
-        returnMapper.lockSaleForReturn(head.getSaleId());
-        Long sourceOrderId = sourceOrderIdOf(head.getSaleId());
+        ErpSale lockedSale = saleMapper.lockById(head.getSaleId());
+        if (lockedSale == null || !lockedSale.getCustomerId().equals(head.getCustomerId())) {
+            throw new ServiceException("原销售单不存在或往来单位不匹配", 40902);
+        }
+        Long sourceOrderId = lockedSale.getSourceOrderId();
         orderProgressService.lockOrder(ORDER_TYPE, sourceOrderId);
-        // 顺序刚性（DOC/24 §6.4）：先撤退款单（回补原 AR settled）→ VOID 负数行 → 库存 reverse
+        // 顺序刚性（DOC/24 §6.4）：只按退货单可信外键撤回受控退款，再冲销红字台账与库存。
         if (head.getRefundReceiptId() != null) {
-            FinReceiptVo receipt = receiptService.selectById(head.getRefundReceiptId());
-            if (receipt != null && "CONFIRMED".equals(receipt.getStatus())) {
-                receiptService.withdraw(head.getRefundReceiptId());
-            }
+            receiptService.withdrawSaleReturnRefund(head.getId());
         }
         arApService.voidBySource("SALE_RETURN", head.getId());
         // P0-2：按单据整体冲销，同商品多行也只冲一次（DOC/31 §13.4）
@@ -517,7 +507,7 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public void voidBill(Long id) {
         ErpSaleReturn head = returnMapper.lockById(id);
         if (head == null) {
@@ -565,9 +555,9 @@ public class ErpSaleReturnServiceImpl implements IErpSaleReturnService {
      * @param id 销售退货单ID
      */
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public void deleteDraft(Long id) {
-        ErpSaleReturn head = returnMapper.selectById(id);
+        ErpSaleReturn head = returnMapper.lockById(id);
         if (head == null) {
             throw new ServiceException("退货单不存在");
         }

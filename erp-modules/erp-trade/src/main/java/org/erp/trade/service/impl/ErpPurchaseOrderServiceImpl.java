@@ -9,6 +9,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.common.sequence.SequenceService;
 import org.erp.master.domain.ErpProduct;
@@ -22,6 +23,7 @@ import org.erp.trade.domain.ErpPurchaseOrder;
 import org.erp.trade.domain.ErpPurchaseOrderItem;
 import org.erp.trade.domain.bo.ErpPurchaseOrderBo;
 import org.erp.trade.domain.vo.ErpPurchaseOrderVo;
+import org.erp.trade.domain.vo.OrderExecutionAmountVo;
 import org.erp.trade.mapper.ErpOrderChangeLogMapper;
 import org.erp.trade.mapper.ErpPurchaseItemMapper;
 import org.erp.trade.mapper.ErpPurchaseMapper;
@@ -150,8 +152,9 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
         Page<ErpPurchaseOrderVo> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
         Map<Long, String> supplierNames = loadSupplierNames(page.getRecords());
         Map<Long, QtySum> qtySums = loadQtySums(page.getRecords());
+        Map<Long, BigDecimal> executionAmounts = loadExecutionAmounts(page.getRecords());
         voPage.setRecords(page.getRecords().stream()
-            .map(h -> toVo(h, supplierNames, qtySums.get(h.getId()))).toList());
+            .map(h -> toVo(h, supplierNames, qtySums.get(h.getId()), executionAmounts.get(h.getId()))).toList());
         return TableDataInfo.build(voPage);
     }
 
@@ -161,7 +164,8 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
         if (head == null) {
             throw new ServiceException("采购订单不存在", 40905);
         }
-        ErpPurchaseOrderVo vo = toVo(head, loadSupplierNames(List.of(head)), null);
+        ErpPurchaseOrderVo vo = toVo(head, loadSupplierNames(List.of(head)), null,
+            loadExecutionAmounts(List.of(head)).get(head.getId()));
         List<ErpPurchaseOrderVo.ItemVo> items = loadItems(id);
         vo.setItems(items);
         // 详情页的执行进度直接由明细汇总，避免再查一次库
@@ -428,8 +432,9 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
             throw new ServiceException("采购订单不存在", 40905);
         }
         List<ErpPurchaseOrderVo.ExecRecordVo> records = new ArrayList<>();
-        records.addAll(purchaseOrderMapper.selectReceipts(id));
-        records.addAll(purchaseOrderMapper.selectReturns(id));
+        String tenantId = currentTenantId();
+        records.addAll(purchaseOrderMapper.selectReceipts(id, tenantId));
+        records.addAll(purchaseOrderMapper.selectReturns(id, tenantId));
         for (ErpPurchaseOrderVo.ExecRecordVo record : records) {
             record.setTypeText("RETURN".equals(record.getType()) ? "退货" : "入库");
             record.setStatusText(StatusText.bill(record.getStatus()));
@@ -1200,6 +1205,27 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
     }
 
     /**
+     * 批量回传订单已执行净金额，供列表直接显示，避免前端按执行记录逐单请求详情。
+     */
+    private Map<Long, BigDecimal> loadExecutionAmounts(Collection<ErpPurchaseOrder> heads) {
+        Map<Long, BigDecimal> result = new HashMap<>();
+        List<Long> ids = heads.stream().map(ErpPurchaseOrder::getId).filter(Objects::nonNull).toList();
+        if (ids.isEmpty()) {
+            return result;
+        }
+        String tenantId = currentTenantId();
+        List<OrderExecutionAmountVo> rows = purchaseOrderMapper.selectExecutionAmounts(ids, tenantId);
+        if (rows != null) {
+            for (OrderExecutionAmountVo row : rows) {
+                if (row.getOrderId() != null) {
+                    result.put(row.getOrderId(), nvl(row.getAmount()));
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * 订单详情行视图：批量带出商品编码/名称/规格/单位/数量精度，并算未交量。
      *
      * @param orderId 订单头ID
@@ -1254,7 +1280,8 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
      * @param sum           数量合计，可空（详情由明细汇总）
      * @return 视图
      */
-    private ErpPurchaseOrderVo toVo(ErpPurchaseOrder head, Map<Long, String> supplierNames, QtySum sum) {
+    private ErpPurchaseOrderVo toVo(ErpPurchaseOrder head, Map<Long, String> supplierNames, QtySum sum,
+                                    BigDecimal executionAmount) {
         ErpPurchaseOrderVo vo = new ErpPurchaseOrderVo();
         vo.setId(head.getId());
         vo.setNo(head.getNo());
@@ -1285,6 +1312,9 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
         vo.setExecutedQty(sum == null ? BigDecimal.ZERO : sum.executedQty);
         vo.setClosedQty(sum == null ? BigDecimal.ZERO : sum.closedQty);
         vo.setRemainQty(sum == null ? BigDecimal.ZERO : sum.remain());
+        vo.setExecutedAmount(executionAmount == null
+            ? BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP)
+            : executionAmount.setScale(2, RoundingMode.HALF_UP));
         // §6.1.3：CLOSED 的语义是「没有未交量但含放弃量」，文案必须带出放弃量
         vo.setExecStatusText(execText(head.getExecStatus(), vo.getTotalQty(), vo.getClosedQty()));
         return vo;
@@ -1441,6 +1471,17 @@ public class ErpPurchaseOrderServiceImpl implements IErpPurchaseOrderService {
      */
     private static String str(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    /**
+     * 原生执行金额 SQL 必须显式绑定当前租户；缺少上下文直接拒绝。
+     */
+    private String currentTenantId() {
+        String tenantId = TenantHelper.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ServiceException("缺少租户上下文，拒绝查询订单执行金额", 40901);
+        }
+        return tenantId;
     }
 
     /**

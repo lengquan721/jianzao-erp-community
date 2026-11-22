@@ -43,8 +43,14 @@ public final class CellValues {
         return text;
     }
 
+    /** Backward-compatible default precision for other ERP importers; callers with known schema should pass precision explicitly. */
     public static BigDecimal decimal(String value, String label, int maxScale, boolean required,
                                      List<String> errors) {
+        return decimal(value, label, 18, maxScale, required, errors);
+    }
+
+    public static BigDecimal decimal(String value, String label, int maxPrecision, int maxScale,
+                                     boolean required, List<String> errors) {
         String text = text(value);
         if (blank(text)) {
             if (required) {
@@ -53,10 +59,22 @@ public final class CellValues {
             }
             return BigDecimal.ZERO;
         }
+        // Bound lexical work, reject exponent notation, NaN/Infinity and non-decimal formats before BigDecimal.
+        if (text.length() > 64 || !text.matches("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)")) {
+            errors.add(label + "必须是长度不超过64位的普通十进制数字");
+            return null;
+        }
         try {
             BigDecimal number = new BigDecimal(text);
-            if (number.stripTrailingZeros().scale() > maxScale) {
+            BigDecimal normalized = number.stripTrailingZeros();
+            int effectiveScale = Math.max(normalized.scale(), 0);
+            int integerDigits = Math.max(normalized.precision() - normalized.scale(), 0);
+            if (effectiveScale > maxScale) {
                 errors.add(label + "最多保留" + maxScale + "位小数");
+                return null;
+            }
+            if (integerDigits > maxPrecision - maxScale || normalized.precision() > maxPrecision) {
+                errors.add(label + "超出数据库DECIMAL(" + maxPrecision + "," + maxScale + ")范围");
                 return null;
             }
             return number;
@@ -112,6 +130,10 @@ public final class CellValues {
             if (required) {
                 errors.add(label + "不能为空");
             }
+            return null;
+        }
+        if (text.length() > 10 || !text.matches("[0-9]{4}[-/][0-9]{1,2}[-/][0-9]{1,2}")) {
+            errors.add(label + "格式必须是 yyyy-MM-dd");
             return null;
         }
         try {

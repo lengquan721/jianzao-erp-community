@@ -3,6 +3,7 @@ package org.dromara.common.web.config;
 import jakarta.servlet.DispatcherType;
 import org.dromara.common.web.config.properties.XssProperties;
 import org.dromara.common.web.filter.RepeatableFilter;
+import org.dromara.common.web.filter.RequestBodyLimitFilter;
 import org.dromara.common.web.filter.XssFilter;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,6 +11,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistration;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.annotation.Value;
 
 /**
  * Filter配置
@@ -21,11 +23,23 @@ import org.springframework.context.annotation.Bean;
 public class FilterConfig {
 
     @Bean
+    @FilterRegistration(
+        name = "requestBodyLimitFilter",
+        urlPatterns = "/*",
+        order = FilterRegistrationBean.HIGHEST_PRECEDENCE,
+        dispatcherTypes = DispatcherType.REQUEST
+    )
+    public RequestBodyLimitFilter requestBodyLimitFilter(
+        @Value("${api-decrypt.headerFlag:encrypt-key}") String encryptHeader) {
+        return new RequestBodyLimitFilter(encryptHeader);
+    }
+
+    @Bean
     @ConditionalOnProperty(value = "xss.enabled", havingValue = "true")
     @FilterRegistration(
         name = "xssFilter",
         urlPatterns = "/*",
-        order = FilterRegistrationBean.HIGHEST_PRECEDENCE + 1,
+        order = FilterRegistrationBean.HIGHEST_PRECEDENCE + 3,
         dispatcherTypes = DispatcherType.REQUEST
     )
     public XssFilter xssFilter() {
@@ -33,7 +47,12 @@ public class FilterConfig {
     }
 
     @Bean
-    @FilterRegistration(name = "repeatableFilter", urlPatterns = "/*")
+    @FilterRegistration(
+        name = "repeatableFilter",
+        urlPatterns = "/*",
+        order = FilterRegistrationBean.HIGHEST_PRECEDENCE + 2,
+        dispatcherTypes = DispatcherType.REQUEST
+    )
     public RepeatableFilter repeatableFilter() {
         return new RepeatableFilter();
     }

@@ -75,11 +75,23 @@
             <template #operation="{ row }">
               <div class="mydoc-actions">
                 <div class="mydoc-actions__row">
-                  <t-button v-if="row.flowStatus === 'draft' || row.flowStatus === 'cancel' || row.flowStatus === 'back'" theme="primary" variant="outline" size="small" @click="handleOpen(row, 'update')">
+                  <t-button
+                    v-if="row.flowStatus === 'draft' || row.flowStatus === 'cancel' || row.flowStatus === 'back'"
+                    theme="primary"
+                    variant="outline"
+                    size="small"
+                    @click="handleOpen(row, 'update')"
+                  >
                     <template #icon><Edit1Icon /></template>
                     编辑
                   </t-button>
-                  <t-button v-if="row.flowStatus === 'draft' || row.flowStatus === 'cancel' || row.flowStatus === 'back'" theme="danger" variant="outline" size="small" @click="handleDelete(row)">
+                  <t-button
+                    v-if="row.flowStatus === 'draft' || row.flowStatus === 'cancel' || row.flowStatus === 'back'"
+                    theme="danger"
+                    variant="outline"
+                    size="small"
+                    @click="handleDelete(row)"
+                  >
                     <template #icon><DeleteIcon /></template>
                     删除
                   </t-button>
@@ -89,7 +101,13 @@
                     <template #icon><BrowseIcon /></template>
                     查看
                   </t-button>
-                  <t-button v-if="row.flowStatus === 'waiting'" theme="warning" variant="outline" size="small" @click="handleCancelProcessApply(row.businessId)">
+                  <t-button
+                    v-if="row.flowStatus === 'waiting'"
+                    theme="warning"
+                    variant="outline"
+                    size="small"
+                    @click="handleCancelProcessApply(row.businessId)"
+                  >
                     <template #icon><NotificationIcon /></template>
                     撤销
                   </t-button>

@@ -1,11 +1,5 @@
 <template>
-  <t-dialog
-    v-model:visible="visible"
-    :width="props.width"
-    draggable
-    attach="body"
-    :close-on-overlay-click="false"
-  >
+  <t-dialog v-model:visible="visible" :width="props.width" draggable attach="body" :close-on-overlay-click="false">
     <template #header>流程干预</template>
     <t-descriptions v-loading="loading" class="margin-top" :title="`${task.flowName}(${task.flowCode})`" :column="2" bordered>
       <t-descriptions-item label="任务名称">{{ task.nodeName }}</t-descriptions-item>
@@ -41,17 +35,19 @@
     <UserSelect ref="transferTaskRef" :multiple="false" @confirm-call-back="handleTransferTask"></UserSelect>
     <!-- 加签组件 -->
     <UserSelect ref="multiInstanceUserRef" :multiple="true" @confirm-call-back="addMultiInstanceUser"></UserSelect>
-    <t-dialog
-      v-model:visible="deleteSignatureVisible"
-      width="700px"
-      draggable
-      attach="body"
-      :footer="false"
-      :close-on-overlay-click="false"
-    >
+    <t-dialog v-model:visible="deleteSignatureVisible" width="700px" draggable attach="body" :footer="false" :close-on-overlay-click="false">
       <template #header>减签人员</template>
       <div>
-        <t-table class="erp-table" :data="deleteUserList" :columns="deleteUserColumns" :resizable="true" row-key="userId" bordered size="small" cell-empty-content="-">
+        <t-table
+          class="erp-table"
+          :data="deleteUserList"
+          :columns="deleteUserColumns"
+          :resizable="true"
+          row-key="userId"
+          bordered
+          size="small"
+          cell-empty-content="-"
+        >
           <template #operation="{ row }">
             <t-button theme="danger" size="small" @click="deleteMultiInstanceUser(row)">
               <template #icon><DeleteIcon /></template>
@@ -67,7 +63,7 @@
 import { DeleteIcon } from 'tdesign-icons-vue-next';
 import { propTypes } from '@/utils/propTypes';
 import { FlowTaskVO, TaskOperationBo } from '@/api/workflow/task/types';
-import UserSelect from '@/components/UserSelect';
+import UserSelect from '@/components/UserSelect/index.vue';
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
 import { getTask, taskOperation, currentTaskAllUser, terminationTask } from '@/api/workflow/task';
 const props = defineProps({
@@ -103,6 +99,8 @@ const task = ref<FlowTaskVO>({
   instanceId: undefined,
   flowName: undefined,
   businessId: undefined,
+  businessCode: undefined,
+  businessTitle: undefined,
   nodeCode: undefined,
   nodeName: undefined,
   flowCode: undefined,

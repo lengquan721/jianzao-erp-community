@@ -8,10 +8,12 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.common.excel.ImportResult;
 import org.erp.fin.domain.bo.FinOpeningBo;
 import org.erp.fin.domain.vo.FinOpeningVo;
+import org.erp.fin.domain.vo.FinOpeningConfirmedAmountVo;
 import org.erp.fin.excel.FinOpeningExcelService;
 import org.erp.fin.service.IFinOpeningService;
 import org.springframework.http.MediaType;
@@ -34,10 +36,28 @@ public class FinOpeningController extends BaseController {
     private final IFinOpeningService openingService;
     private final FinOpeningExcelService excelService;
 
+    /** 兼容旧列表：至多 5000 条完整结果，超限明确失败；交互页面使用 /list/page。 */
     @SaCheckPermission("erp:finance:list")
     @GetMapping("/list")
     public R<List<FinOpeningVo>> list(@RequestParam(required = false) String partyType) {
         return R.ok(openingService.listAll(partyType));
+    }
+
+    /** 分页版与旧 list 并行，保留旧消费者的 R<List> 形状。 */
+    @SaCheckPermission("erp:finance:list")
+    @GetMapping("/list/page")
+    public TableDataInfo<FinOpeningVo> page(@RequestParam(required = false) String partyType,
+                                           @RequestParam(defaultValue = "1") int pageNum,
+                                           @RequestParam(defaultValue = "20") int pageSize) {
+        return openingService.page(partyType, pageNum, pageSize);
+    }
+
+    /** 当前主数据页的定向批量期初；缺失/不可读的往来不会伪装成 0。 */
+    @SaCheckPermission("erp:finance:list")
+    @GetMapping("/confirmed/by-party-ids")
+    public R<List<FinOpeningConfirmedAmountVo>> confirmedByPartyIds(@RequestParam("partyType") String partyType,
+                                                                  @RequestParam("partyIds") String partyIds) {
+        return R.ok(openingService.confirmedByPartyIds(partyType, partyIds));
     }
 
     @SaCheckPermission("erp:finance:opening")
@@ -67,7 +87,7 @@ public class FinOpeningController extends BaseController {
     }
 
     /**
-     * 导出期初往来（全部，不分页）
+     * 导出全部匹配期初往来（最多 5000 行，超限在写 Excel 前明确失败，不截断）。
      */
     @SaCheckPermission("erp:finance:opening:export")
     @Log(title = "期初往来导出", businessType = BusinessType.EXPORT)

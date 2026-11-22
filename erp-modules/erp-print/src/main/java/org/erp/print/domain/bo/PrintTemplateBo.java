@@ -27,8 +27,16 @@ public class PrintTemplateBo {
 
     private String variablesJson;
 
-    @NotBlank(message = "模板内容不能为空")
+    /**
+     * 模板内容（HTML + Thymeleaf）。
+     * 可视化设计器提交时可不填：后端按 schemaJson 编译生成后回写。
+     */
     private String content;
+
+    /**
+     * 设计器组件树 JSON；为空表示该模板用 HTML 源码模式编辑
+     */
+    private String schemaJson;
 
     private String paper;
 

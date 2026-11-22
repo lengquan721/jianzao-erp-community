@@ -8,9 +8,11 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.common.sequence.SequenceService;
 import org.erp.fin.service.IFinArApService;
+import org.erp.fin.service.IFinOpeningGuardService;
 import org.erp.master.domain.ErpProduct;
 import org.erp.master.domain.ErpSupplier;
 import org.erp.master.mapper.ErpProductMapper;
@@ -23,6 +25,7 @@ import org.erp.trade.domain.ErpPurchaseReturn;
 import org.erp.trade.domain.ErpPurchaseReturnItem;
 import org.erp.trade.domain.bo.ErpPurchaseReturnBo;
 import org.erp.trade.domain.vo.ErpPurchaseReturnVo;
+import org.erp.trade.domain.vo.ErpReturnQtyAggregateVo;
 import org.erp.trade.mapper.ErpPurchaseItemMapper;
 import org.erp.trade.mapper.ErpPurchaseMapper;
 import org.erp.trade.mapper.ErpPurchaseReturnItemMapper;
@@ -35,6 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -67,6 +71,7 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
     private final IFinArApService arApService;
     private final SequenceService sequenceService;
     private final IErpOrderProgressService orderProgressService;
+    private final IFinOpeningGuardService openingGuardService;
 
     @Override
     public TableDataInfo<ErpPurchaseReturnVo> selectPage(String keyword, Long supplierId, String status, PageQuery pageQuery) {
@@ -113,9 +118,10 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
             .eq(ErpPurchaseItem::getOrderId, purchaseId)
             .orderByAsc(ErpPurchaseItem::getSeq));
         Map<Long, ErpProduct> products = loadProducts(items.stream().map(ErpPurchaseItem::getProductId).toList());
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(items.stream().map(ErpPurchaseItem::getId).toList(), null);
         List<ErpPurchaseReturnVo.ItemVo> result = new ArrayList<>();
         for (ErpPurchaseItem item : items) {
-            BigDecimal returned = returnedQty(item.getId());
+            BigDecimal returned = returnedByItem.getOrDefault(item.getId(), BigDecimal.ZERO);
             ErpPurchaseReturnVo.ItemVo vo = new ErpPurchaseReturnVo.ItemVo();
             vo.setPurchaseItemId(item.getId());
             vo.setProductId(item.getProductId());
@@ -172,6 +178,10 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
             .eq(ErpPurchaseReturnItem::getOrderId, orderId)
             .orderByAsc(ErpPurchaseReturnItem::getSeq));
         Map<Long, ErpProduct> products = loadProducts(items.stream().map(ErpPurchaseReturnItem::getProductId).toList());
+        List<Long> originalItemIds = items.stream().map(ErpPurchaseReturnItem::getPurchaseItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpPurchaseItem> originals = loadPurchaseItems(originalItemIds);
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(originalItemIds, null);
         List<ErpPurchaseReturnVo.ItemVo> result = new ArrayList<>();
         for (ErpPurchaseReturnItem row : items) {
             ErpPurchaseReturnVo.ItemVo vo = new ErpPurchaseReturnVo.ItemVo();
@@ -185,9 +195,9 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
             vo.setReturnCost(row.getReturnCost());
             vo.setRemark(row.getRemark());
             // 详情页需展示「原行数量 / 已退 / 可退」：按原采购行补算，口径与 originalItems 一致
-            ErpPurchaseItem original = row.getPurchaseItemId() == null ? null : purchaseItemMapper.selectById(row.getPurchaseItemId());
+            ErpPurchaseItem original = originals.get(row.getPurchaseItemId());
             if (original != null) {
-                BigDecimal returned = returnedQty(original.getId());
+                BigDecimal returned = returnedByItem.getOrDefault(original.getId(), BigDecimal.ZERO);
                 vo.setOriginalQty(original.getQty());
                 vo.setReturnedQty(returned);
                 vo.setReturnableQty(original.getQty().subtract(returned));
@@ -207,26 +217,47 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
 
     private Map<Long, ErpProduct> loadProducts(List<Long> productIds) {
         Map<Long, ErpProduct> products = new HashMap<>();
-        if (productIds.isEmpty()) {
+        List<Long> ids = productIds.stream().filter(id -> id != null).distinct().toList();
+        if (ids.isEmpty()) {
             return products;
         }
-        for (ErpProduct p : productMapper.selectByIds(productIds)) {
+        for (ErpProduct p : productMapper.selectByIds(ids)) {
             products.put(p.getId(), p);
         }
         return products;
     }
 
-    private BigDecimal returnedQty(Long purchaseItemId) {
-        List<ErpPurchaseReturnItem> rows = itemMapper.selectList(new LambdaQueryWrapper<ErpPurchaseReturnItem>()
-            .eq(ErpPurchaseReturnItem::getPurchaseItemId, purchaseItemId));
-        BigDecimal total = BigDecimal.ZERO;
-        for (ErpPurchaseReturnItem row : rows) {
-            ErpPurchaseReturn head = returnMapper.selectById(row.getOrderId());
-            if (head != null && "CONFIRMED".equals(head.getStatus())) {
-                total = total.add(row.getQty());
-            }
+    private Map<Long, ErpPurchaseItem> loadPurchaseItems(Collection<Long> purchaseItemIds) {
+        Map<Long, ErpPurchaseItem> originals = new HashMap<>();
+        if (purchaseItemIds.isEmpty()) {
+            return originals;
         }
-        return total;
+        for (ErpPurchaseItem original : purchaseItemMapper.selectByIds(purchaseItemIds)) {
+            originals.put(original.getId(), original);
+        }
+        return originals;
+    }
+
+    /** 当前租户下只累计未软删且单头 CONFIRMED 的原采购行退货数量。 */
+    private Map<Long, BigDecimal> loadReturnedQty(Collection<Long> purchaseItemIds, Long excludeReturnId) {
+        Map<Long, BigDecimal> returned = new HashMap<>();
+        List<Long> ids = purchaseItemIds.stream().filter(id -> id != null).distinct().toList();
+        if (ids.isEmpty()) {
+            return returned;
+        }
+        for (ErpReturnQtyAggregateVo aggregate : itemMapper.sumConfirmedReturnedQty(
+            ids, currentTenantId(), excludeReturnId)) {
+            returned.put(aggregate.getOriginalItemId(), aggregate.getReturnedQty());
+        }
+        return returned;
+    }
+
+    private String currentTenantId() {
+        String tenantId = TenantHelper.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ServiceException("缺少租户上下文，拒绝查询退货数量", 40901);
+        }
+        return tenantId;
     }
 
     @Override
@@ -285,13 +316,16 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
 
     private void saveItems(ErpPurchaseReturn head, ErpPurchaseReturnBo bo) {
         Set<Long> purchaseItemIds = new HashSet<>();
+        List<Long> originalItemIds = bo.getItems().stream().map(ErpPurchaseReturnBo.ItemBo::getPurchaseItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpPurchaseItem> originals = loadPurchaseItems(originalItemIds);
         BigDecimal amountTotal = BigDecimal.ZERO;
         int seq = 0;
         for (ErpPurchaseReturnBo.ItemBo item : bo.getItems()) {
             if (!purchaseItemIds.add(item.getPurchaseItemId())) {
                 throw new ServiceException("明细中重复引用原采购行：" + item.getPurchaseItemId());
             }
-            ErpPurchaseItem original = purchaseItemMapper.selectById(item.getPurchaseItemId());
+            ErpPurchaseItem original = originals.get(item.getPurchaseItemId());
             if (original == null || !original.getOrderId().equals(head.getPurchaseId())) {
                 throw new ServiceException("原采购明细行不属于该原单：" + item.getPurchaseItemId());
             }
@@ -346,14 +380,17 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
         List<ErpPurchaseReturnItem> items = itemMapper.selectList(new LambdaQueryWrapper<ErpPurchaseReturnItem>()
             .eq(ErpPurchaseReturnItem::getOrderId, head.getId())
             .orderByAsc(ErpPurchaseReturnItem::getSeq));
-        checkReturnable(head, items);
+        Map<Long, ErpPurchaseItem> originalRows = checkReturnable(head, items);
+
+        // 退货单头、原单头和订单头/行已依序加锁；先校验锁定退货单的日期，再处理库存与台账。
+        openingGuardService.lockAndCheckBusinessDate("AP", head.getSupplierId(), head.getBizDate());
 
         // 库存回减：按原行 cost_price（含运杂费）快照出库，防超卖 40901；动库存前按 product_id 升序锁齐库存行
         inventoryService.lockStockRows(items.stream().map(ErpPurchaseReturnItem::getProductId).toList());
         int seq = 0;
         BigDecimal costTotal = BigDecimal.ZERO;
         for (ErpPurchaseReturnItem row : items) {
-            ErpPurchaseItem original = purchaseItemMapper.selectById(row.getPurchaseItemId());
+            ErpPurchaseItem original = originalRows.get(row.getPurchaseItemId());
             BigDecimal costPrice = original.getCostPrice() == null ? BigDecimal.ZERO : original.getCostPrice();
             inventoryService.outbound("PURCHASE_RETURN", head.getNo(), head.getId(), row.getProductId(),
                 warehouseService.defaultWarehouseId(), row.getQty(), costPrice,
@@ -385,31 +422,26 @@ public class ErpPurchaseReturnServiceImpl implements IErpPurchaseReturnService {
         orderProgressService.recalc(ORDER_TYPE, sourceOrderId, null);
     }
 
-    private void checkReturnable(ErpPurchaseReturn head, List<ErpPurchaseReturnItem> items) {
-        boolean selfConfirmed = "CONFIRMED".equals(head.getStatus());
+    private Map<Long, ErpPurchaseItem> checkReturnable(ErpPurchaseReturn head, List<ErpPurchaseReturnItem> items) {
+        List<Long> originalItemIds = items.stream().map(ErpPurchaseReturnItem::getPurchaseItemId)
+            .filter(id -> id != null).distinct().toList();
+        Map<Long, ErpPurchaseItem> originals = loadPurchaseItems(originalItemIds);
         for (ErpPurchaseReturnItem row : items) {
-            ErpPurchaseItem original = purchaseItemMapper.selectById(row.getPurchaseItemId());
-            if (original == null) {
+            if (originals.get(row.getPurchaseItemId()) == null) {
                 throw new ServiceException("原采购明细行不存在：" + row.getPurchaseItemId());
             }
-            BigDecimal returned = BigDecimal.ZERO;
-            List<ErpPurchaseReturnItem> allReturnRows = itemMapper.selectList(new LambdaQueryWrapper<ErpPurchaseReturnItem>()
-                .eq(ErpPurchaseReturnItem::getPurchaseItemId, row.getPurchaseItemId()));
-            for (ErpPurchaseReturnItem other : allReturnRows) {
-                if (other.getId().equals(row.getId()) && selfConfirmed) {
-                    continue;
-                }
-                ErpPurchaseReturn otherHead = returnMapper.selectById(other.getOrderId());
-                if (otherHead != null && "CONFIRMED".equals(otherHead.getStatus())) {
-                    returned = returned.add(other.getQty());
-                }
-            }
+        }
+        Map<Long, BigDecimal> returnedByItem = loadReturnedQty(originalItemIds, head.getId());
+        for (ErpPurchaseReturnItem row : items) {
+            ErpPurchaseItem original = originals.get(row.getPurchaseItemId());
+            BigDecimal returned = returnedByItem.getOrDefault(row.getPurchaseItemId(), BigDecimal.ZERO);
             BigDecimal returnable = original.getQty().subtract(returned);
             if (row.getQty().compareTo(returnable) > 0) {
                 throw new ServiceException("累计退货数量超过原行可退数量（原行 " + original.getQty()
                     + "，已退 " + returned + "，本次 " + row.getQty() + "）", 40902);
             }
         }
+        return originals;
     }
 
     @Override

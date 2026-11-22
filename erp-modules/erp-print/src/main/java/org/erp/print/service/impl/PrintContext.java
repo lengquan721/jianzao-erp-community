@@ -102,32 +102,48 @@ public class PrintContext {
          * 人民币大写
          */
         private String amountUpper;
+        /**
+         * 货品金额（不含运杂费的明细行合计），即「小计」
+         */
+        private BigDecimal goodsAmount;
+        /**
+         * 运杂费合计
+         */
+        private BigDecimal freightAmount;
+        /**
+         * 累计欠款：该客户/供应商在应收应付台账上的全部未核销余额
+         */
+        private BigDecimal debtTotal;
+        /**
+         * 本单未收/未付（本单金额 − 本单已核销）
+         */
+        private BigDecimal unsettledAmount;
     }
 
     @Data
     public static class Statement {
         private String month;
-        /**
-         * 对账期间开始日 yyyy-MM-dd（月度模式为该月 1 日）
-         */
         private String periodStart;
-        /**
-         * 对账期间结束日 yyyy-MM-dd，含当日（月度模式为该月最后一天）
-         */
         private String periodEnd;
-        /**
-         * 对账期间展示文案：月度 "yyyy-MM 月度"，区间 "yyyy-MM-dd 至 yyyy-MM-dd"
-         */
         private String periodLabel;
         private BigDecimal opening;
         private BigDecimal previousReceivable;
-        private BigDecimal totalReceivable;
+        private BigDecimal openingEntryAmount;
+        /** Gross confirmed sales; retained for existing monthly templates. */
         private BigDecimal salesAmount;
+        /** Returns shown as a positive amount; retained for existing monthly templates. */
+        private BigDecimal returnAmount;
+        /** Independent signed net-sales display (gross sales less returns). */
+        private BigDecimal netSalesAmount;
         private BigDecimal receiptAmount;
+        private BigDecimal refundAmount;
+        /** Net receipt display (receipts less refunds), without changing the legacy fields. */
+        private BigDecimal netReceiptAmount;
         private BigDecimal monthlyUnpaid;
         private BigDecimal cumulativeSales;
         private BigDecimal cumulativeReceipts;
         private BigDecimal cumulativeUnpaid;
+        private BigDecimal totalReceivable;
         private BigDecimal closing;
         private List<StatementItem> items = new ArrayList<>();
     }
@@ -152,6 +168,7 @@ public class PrintContext {
          */
         private BigDecimal price;
         private BigDecimal amount;
+        // 兼容已有模板的变量名；当前生效单据不能重建历史逐行已收/未结，保持空值。
         private BigDecimal settled;
         private BigDecimal unsettled;
     }

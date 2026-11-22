@@ -97,7 +97,13 @@
             </template>
           </t-table>
 
-          <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="getList" />
+          <pagination
+            v-show="total > 0"
+            v-model:page="queryParams.pageNum"
+            v-model:limit="queryParams.pageSize"
+            :total="total"
+            @pagination="getList"
+          />
         </div>
       </t-col>
     </t-row>
@@ -113,7 +119,13 @@
           <t-row :gutter="16">
             <t-col :span="3">
               <t-form-item label="供应商" name="supplierId">
-                <PartnerSelect v-model="form.supplierId" kind="supplier" placeholder="请选择供应商" :disabled="!!form.id" @change="() => handleSupplierChange()" />
+                <PartnerSelect
+                  v-model="form.supplierId"
+                  kind="supplier"
+                  placeholder="请选择供应商"
+                  :disabled="!!form.id"
+                  @change="() => handleSupplierChange()"
+                />
               </t-form-item>
             </t-col>
             <t-col :span="4">
@@ -202,7 +214,9 @@
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">取 消</t-button>
             <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存草稿</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:purchase-return:audit'])" theme="success" :loading="submitLoading" @click="submitForm(true)">保存并确认</t-button>
+            <t-button v-if="!readonly && checkPermi(['erp:purchase-return:audit'])" theme="success" :loading="submitLoading" @click="submitForm(true)"
+              >保存并确认</t-button
+            >
           </div>
         </div>
       </template>
@@ -225,14 +239,7 @@ import {
 } from '@/api/erp/trade';
 import { accountOptions as accountOptionsFn } from '@/api/erp/account';
 import { ERP_BILL_STATUS } from '@/api/erp/enums';
-import type {
-  ErpAmount,
-  ErpBillStatus,
-  ErpId,
-  PurchaseReturnItemVO,
-  PurchaseReturnQuery,
-  PurchaseReturnVO
-} from '@/api/erp/types';
+import type { ErpAmount, ErpBillStatus, ErpId, PurchaseReturnItemVO, PurchaseReturnQuery, PurchaseReturnVO } from '@/api/erp/types';
 import { formatMoney, formatQtyByScale, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
@@ -521,9 +528,7 @@ const submitForm = async (confirm: boolean) => {
     return;
   }
   if (confirm) {
-    await proxy?.$modal.confirm(
-      '确认退货？库存回减（库存不足会失败）、应付红冲'
-    );
+    await proxy?.$modal.confirm('确认退货？库存回减（库存不足会失败）、应付红冲');
   }
   submitLoading.value = true;
   try {

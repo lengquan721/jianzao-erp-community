@@ -3,6 +3,7 @@ package org.erp.trade.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.erp.common.enums.StatusText;
 import org.erp.fin.domain.FinArAp;
 import org.erp.fin.domain.FinCostLedger;
@@ -19,7 +20,8 @@ import org.erp.master.mapper.ErpCustomerMapper;
 import org.erp.master.mapper.ErpProductMapper;
 import org.erp.master.mapper.ErpSupplierMapper;
 import org.erp.stock.domain.ErpStock;
-import org.erp.stock.domain.vo.ErpStockAlertVo;
+import org.erp.stock.domain.vo.ErpStockAlertTopRow;
+import org.erp.stock.domain.vo.ErpStockSumVo;
 import org.erp.stock.mapper.ErpStockAlertMapper;
 import org.erp.stock.mapper.ErpStockMapper;
 import org.erp.trade.domain.ErpPurchase;
@@ -29,6 +31,8 @@ import org.erp.trade.domain.vo.DashboardPartnerRankVo;
 import org.erp.trade.domain.vo.DashboardStockAlertVo;
 import org.erp.trade.domain.vo.DashboardSummaryVo;
 import org.erp.trade.domain.vo.DashboardTrendVo;
+import org.erp.trade.domain.vo.DashboardAggregateVo;
+import org.erp.trade.mapper.DashboardAggregateMapper;
 import org.erp.trade.mapper.ErpPurchaseMapper;
 import org.erp.trade.mapper.ErpSaleMapper;
 import org.erp.trade.service.IDashboardService;
@@ -74,6 +78,7 @@ public class DashboardServiceImpl implements IDashboardService {
     private final ErpProductMapper productMapper;
     private final ErpCustomerMapper customerMapper;
     private final ErpSupplierMapper supplierMapper;
+    private final DashboardAggregateMapper dashboardAggregateMapper;
 
     @Override
     @Transactional(readOnly = true)
@@ -82,11 +87,13 @@ public class DashboardServiceImpl implements IDashboardService {
         Date monthStart = date(first);
         Date monthEnd = date(first.plusMonths(1));
 
+        String tenantId = currentTenantId();
+        DashboardAggregateVo saleAggregate = dashboardAggregateMapper.monthSales(tenantId, monthStart, monthEnd);
         DashboardSummaryVo vo = new DashboardSummaryVo();
-        vo.setMonthSales(sumSales(monthStart, monthEnd));
-        vo.setMonthPurchaseAmount(sumPurchases(monthStart, monthEnd));
-        vo.setMonthReceiptAmount(sumReceipts(monthStart, monthEnd));
-        BigDecimal monthGrossProfit = sumSaleGrossProfit(monthStart, monthEnd);
+        vo.setMonthSales(scaleMoney(amount(saleAggregate)));
+        vo.setMonthPurchaseAmount(scaleMoney(amount(dashboardAggregateMapper.monthPurchases(tenantId, monthStart, monthEnd))));
+        vo.setMonthReceiptAmount(scaleMoney(amount(dashboardAggregateMapper.monthReceipts(tenantId, monthStart, monthEnd))));
+        BigDecimal monthGrossProfit = scaleMoney(grossProfit(saleAggregate));
         vo.setMonthGrossProfit(monthGrossProfit);
         // 本月销售毛利率 = Σgross_profit / Σtotal_amount × 100（与销售单毛利率同口径）
         vo.setMonthGrossMargin(vo.getMonthSales() != null
@@ -120,10 +127,11 @@ public class DashboardServiceImpl implements IDashboardService {
         Date from = date(first);
         Date to = date(first.plusMonths(n));
 
+        String tenantId = currentTenantId();
         DashboardTrendVo vo = new DashboardTrendVo();
-        Map<String, BigDecimal> salesByMonth = groupSalesByMonth(from, to);
-        Map<String, BigDecimal> costByMonth = groupCostByMonth(from, to);
-        Map<String, BigDecimal> receiptsByMonth = groupReceiptsByMonth(from, to);
+        Map<String, BigDecimal> salesByMonth = groupSalesByMonth(tenantId, from, to);
+        Map<String, BigDecimal> costByMonth = groupCostByMonth(tenantId, from, to);
+        Map<String, BigDecimal> receiptsByMonth = groupReceiptsByMonth(tenantId, from, to);
         for (int i = 0; i < n; i++) {
             String m = first.plusMonths(i).format(MONTH_FMT);
             vo.getMonths().add(m);
@@ -137,169 +145,88 @@ public class DashboardServiceImpl implements IDashboardService {
         return vo;
     }
 
-    private BigDecimal sumSales(Date from, Date to) {
-        return saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
-                .select(ErpSale::getTotalAmount)
-                .eq(ErpSale::getStatus, "CONFIRMED")
-                .ge(ErpSale::getBizDate, from)
-                .lt(ErpSale::getBizDate, to))
-            .stream().map(s -> nvl(s.getTotalAmount())).reduce(BigDecimal.ZERO, BigDecimal::add)
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal sumSaleGrossProfit(Date from, Date to) {
-        return saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
-                .select(ErpSale::getGrossProfit)
-                .eq(ErpSale::getStatus, "CONFIRMED")
-                .ge(ErpSale::getBizDate, from)
-                .lt(ErpSale::getBizDate, to))
-            .stream().map(r -> r.getGrossProfit() == null ? BigDecimal.ZERO : r.getGrossProfit())
-            .reduce(BigDecimal.ZERO, BigDecimal::add)
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private Map<String, BigDecimal> groupSalesByMonth(Date from, Date to) {
-        return groupByMonth(saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
-                .select(ErpSale::getTotalAmount, ErpSale::getBizDate)
-                .eq(ErpSale::getStatus, "CONFIRMED")
-                .ge(ErpSale::getBizDate, from)
-                .lt(ErpSale::getBizDate, to)),
-            ErpSale::getBizDate, ErpSale::getTotalAmount);
-    }
-
-    private BigDecimal sumPurchases(Date from, Date to) {
-        return purchaseMapper.selectList(new LambdaQueryWrapper<ErpPurchase>()
-                .select(ErpPurchase::getTotalAmount)
-                .eq(ErpPurchase::getStatus, "CONFIRMED")
-                .ge(ErpPurchase::getBizDate, from)
-                .lt(ErpPurchase::getBizDate, to))
-            .stream().map(p -> nvl(p.getTotalAmount())).reduce(BigDecimal.ZERO, BigDecimal::add)
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private BigDecimal sumReceipts(Date from, Date to) {
-        return receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
-                .select(FinReceipt::getAmount)
-                .eq(FinReceipt::getStatus, "CONFIRMED")
-                .ge(FinReceipt::getBizDate, from)
-                .lt(FinReceipt::getBizDate, to))
-            .stream().map(r -> nvl(r.getAmount())).reduce(BigDecimal.ZERO, BigDecimal::add)
-            .setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private Map<String, BigDecimal> groupReceiptsByMonth(Date from, Date to) {
-        return groupByMonth(receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
-                .select(FinReceipt::getAmount, FinReceipt::getBizDate)
-                .eq(FinReceipt::getStatus, "CONFIRMED")
-                .ge(FinReceipt::getBizDate, from)
-                .lt(FinReceipt::getBizDate, to)),
-            FinReceipt::getBizDate, FinReceipt::getAmount);
-    }
-
-    /**
-     * 趋势成本与综合成本报表同口径：销售成本（biz_sale.cost_amount）+ 其他出库 + 计入成本的其他支出。
-     */
-    private Map<String, BigDecimal> groupCostByMonth(Date from, Date to) {
+    private Map<String, BigDecimal> groupSalesByMonth(String tenantId, Date from, Date to) {
         Map<String, BigDecimal> result = new HashMap<>();
-        for (ErpSale row : saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
-            .select(ErpSale::getCostAmount, ErpSale::getBizDate)
-            .eq(ErpSale::getStatus, "CONFIRMED")
-            .ge(ErpSale::getBizDate, from)
-            .lt(ErpSale::getBizDate, to))) {
-            if (row.getBizDate() == null) {
-                continue;
-            }
-            result.merge(monthKey(row.getBizDate()), nvl(row.getCostAmount()), BigDecimal::add);
+        for (DashboardAggregateVo row : rows(dashboardAggregateMapper.trendSales(tenantId, from, to))) {
+            result.put(row.getMonth(), scaleMoney(row.getAmount()));
         }
-        List<FinCostLedger> rows = costLedgerMapper.selectList(new LambdaQueryWrapper<FinCostLedger>()
-            .select(FinCostLedger::getAmount, FinCostLedger::getBizDate)
-            .eq(FinCostLedger::getStatus, "ACTIVE")
-            .in(FinCostLedger::getCostType, "OTHER_OUT", "OTHER_EXPENSE")
-            .ge(FinCostLedger::getBizDate, from)
-            .lt(FinCostLedger::getBizDate, to));
-        for (FinCostLedger row : rows) {
-            if (row.getBizDate() == null) {
-                continue;
-            }
-            String m = monthKey(row.getBizDate());
-            result.merge(m, nvl(row.getAmount()), BigDecimal::add);
+        return result;
+    }
+
+    private Map<String, BigDecimal> groupReceiptsByMonth(String tenantId, Date from, Date to) {
+        Map<String, BigDecimal> result = new HashMap<>();
+        for (DashboardAggregateVo row : rows(dashboardAggregateMapper.trendReceipts(tenantId, from, to))) {
+            result.put(row.getMonth(), scaleMoney(row.getAmount()));
         }
         return result;
     }
 
     /**
+     * 趋势成本与综合成本报表同口径：销售成本（biz_sale.cost_amount）+ 其他出库 + 计入成本的其他支出。
+     * 两路都在数据库按月份分组，服务层只合并已聚合结果。
+     */
+    private Map<String, BigDecimal> groupCostByMonth(String tenantId, Date from, Date to) {
+        Map<String, BigDecimal> result = new HashMap<>();
+        for (DashboardAggregateVo row : rows(dashboardAggregateMapper.trendSales(tenantId, from, to))) {
+            result.merge(row.getMonth(), nvl(row.getCost()), BigDecimal::add);
+        }
+        for (DashboardAggregateVo row : rows(dashboardAggregateMapper.trendOtherCosts(tenantId, from, to))) {
+            result.merge(row.getMonth(), nvl(row.getAmount()), BigDecimal::add);
+        }
+        result.replaceAll((month, amount) -> scaleMoney(amount));
+        return result;
+    }
+
+    /**
+     * 未收/未付金额：交给数据库按 party_type 聚合，避免把整张费台账读进内存累加。
+     *
      * @return [0]=AR 未收，[1]=AP 未付
      */
     private BigDecimal[] sumUnsettled() {
-        List<FinArAp> rows = arApMapper.selectList(new LambdaQueryWrapper<FinArAp>()
-            .select(FinArAp::getPartyType, FinArAp::getAmount, FinArAp::getSettledAmount)
-            .ne(FinArAp::getStatus, STATUS_VOID));
-        BigDecimal ar = BigDecimal.ZERO;
-        BigDecimal ap = BigDecimal.ZERO;
-        for (FinArAp row : rows) {
-            if (STATUS_VOID.equals(row.getStatus())) {
-                continue;
-            }
-            BigDecimal unsettled = nvl(row.getAmount()).subtract(nvl(row.getSettledAmount()));
-            if ("AR".equals(row.getPartyType())) {
-                ar = ar.add(unsettled);
-            } else if ("AP".equals(row.getPartyType())) {
-                ap = ap.add(unsettled);
-            }
-        }
+        BigDecimal ar = nvl(arApMapper.sumUnsettledByPartyType("AR"));
+        BigDecimal ap = nvl(arApMapper.sumUnsettledByPartyType("AP"));
         return new BigDecimal[]{ar.setScale(2, RoundingMode.HALF_UP), ap.setScale(2, RoundingMode.HALF_UP)};
     }
 
     /**
+     * 按商品类型汇总库存：数据库按类型分组聚合，只回一行，避免全表扫描后在内存按类型累加。
+     *
      * @return [0]=数量合计，[1]=金额合计（Σ qty × avg_cost）
      */
     private BigDecimal[] sumStockByType(String productType) {
-        List<ErpStock> rows = stockMapper.selectList(new LambdaQueryWrapper<ErpStock>()
-            .select(ErpStock::getProductId, ErpStock::getQty, ErpStock::getAvgCost));
-        if (rows.isEmpty()) {
+        ErpStockSumVo sum = stockMapper.sumStockByProductType(productType);
+        if (sum == null) {
             return new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
         }
-        List<Long> productIds = rows.stream().map(ErpStock::getProductId).distinct().toList();
-        Map<Long, String> types = new HashMap<>();
-        for (ErpProduct p : productMapper.selectByIds(productIds)) {
-            types.put(p.getId(), p.getType());
-        }
-        BigDecimal qty = BigDecimal.ZERO;
-        BigDecimal amount = BigDecimal.ZERO;
-        for (ErpStock row : rows) {
-            if (!productType.equals(types.get(row.getProductId()))) {
-                continue;
-            }
-            BigDecimal q = nvl(row.getQty());
-            qty = qty.add(q);
-            amount = amount.add(q.multiply(nvl(row.getAvgCost())));
-        }
-        return new BigDecimal[]{qty, amount.setScale(2, RoundingMode.HALF_UP)};
+        return new BigDecimal[]{nvl(sum.getQty()), nvl(sum.getAmount()).setScale(2, RoundingMode.HALF_UP)};
     }
 
     @Override
     @Transactional(readOnly = true)
     public DashboardStockAlertVo stockAlert() {
-        List<ErpStockAlertVo> rows = stockAlertMapper.selectAlerts(null, null);
+        // 结果已按类型取前 5；alertCount 是截断前的该类型总数。
+        List<ErpStockAlertTopRow> rows = stockAlertMapper.selectTopAlerts(null, 5);
         DashboardStockAlertVo vo = new DashboardStockAlertVo();
+        vo.setLowCount(0L);
+        vo.setHighCount(0L);
         List<DashboardStockAlertVo.Item> lows = new ArrayList<>();
         List<DashboardStockAlertVo.Item> highs = new ArrayList<>();
-        for (ErpStockAlertVo row : rows) {
+        for (ErpStockAlertTopRow row : rows) {
             DashboardStockAlertVo.Item item = new DashboardStockAlertVo.Item();
             item.setProductId(row.getProductId());
             item.setProductName(row.getProductName());
             item.setTotalQty(row.getTotalQty());
             item.setGap(row.getGap());
             if ("HIGH".equals(row.getAlertType())) {
+                vo.setHighCount(row.getAlertCount());
                 highs.add(item);
             } else {
+                vo.setLowCount(row.getAlertCount());
                 lows.add(item);
             }
         }
-        vo.setLowCount((long) lows.size());
-        vo.setHighCount((long) highs.size());
-        vo.setLowTop5(lows.stream().limit(5).toList());
-        vo.setHighTop5(highs.stream().limit(5).toList());
+        vo.setLowTop5(List.copyOf(lows));
+        vo.setHighTop5(List.copyOf(highs));
         return vo;
     }
 
@@ -331,10 +258,12 @@ public class DashboardServiceImpl implements IDashboardService {
             docs.add(recentDoc("PURCHASE", p.getNo(), p.getBizDate(), p.getTotalAmount(), p.getStatus()));
         }
         for (FinReceipt r : receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
-                .select(FinReceipt::getNo, FinReceipt::getBizDate, FinReceipt::getAmount, FinReceipt::getStatus, FinReceipt::getId)
+                .select(FinReceipt::getNo, FinReceipt::getBizDate, FinReceipt::getAmount, FinReceipt::getStatus, FinReceipt::getId,
+                    FinReceipt::getNegative)
                 .orderByDesc(FinReceipt::getId)
                 .last("limit " + RECENT_DOC_LIMIT))) {
-            docs.add(recentDoc("RECEIPT", r.getNo(), r.getBizDate(), r.getAmount(), r.getStatus()));
+            docs.add(recentDoc("RECEIPT", r.getNo(), r.getBizDate(),
+                signedReceiptAmount(r.getAmount(), r.getNegative()), r.getStatus()));
         }
         for (FinPayment pay : paymentMapper.selectList(new LambdaQueryWrapper<FinPayment>()
                 .select(FinPayment::getNo, FinPayment::getBizDate, FinPayment::getAmount, FinPayment::getStatus, FinPayment::getId)
@@ -380,8 +309,42 @@ public class DashboardServiceImpl implements IDashboardService {
         return Date.from(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant());
     }
 
+    /** 原生聚合查询显式接收租户；缺少上下文直接拒绝，绝不回落默认租户。 */
+    private String currentTenantId() {
+        String tenantId = TenantHelper.getTenantId();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new ServiceException("缺少租户上下文，拒绝查询看板聚合", 40901);
+        }
+        return tenantId;
+    }
+
+    private static List<DashboardAggregateVo> rows(List<DashboardAggregateVo> value) {
+        return value == null ? List.of() : value;
+    }
+
+    private static BigDecimal amount(DashboardAggregateVo value) {
+        return value == null || value.getAmount() == null ? BigDecimal.ZERO : value.getAmount();
+    }
+
+    private static BigDecimal grossProfit(DashboardAggregateVo value) {
+        return value == null || value.getGrossProfit() == null ? BigDecimal.ZERO : value.getGrossProfit();
+    }
+
+    private static BigDecimal scaleMoney(BigDecimal value) {
+        return nvl(value).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal signedReceiptAmount(BigDecimal value, Integer negative) {
+        BigDecimal amount = nvl(value);
+        return Integer.valueOf(1).equals(negative) ? amount.negate() : amount;
+    }
+
     private static BigDecimal nvl(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    private static Long nvl(Long v) {
+        return v == null ? 0L : v;
     }
 
     /**
@@ -451,60 +414,41 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setPartyType(partyType);
         vo.setMonth(first.format(MONTH_FMT));
 
+        String tenantId = currentTenantId();
         Map<Long, DashboardPartnerRankVo.RankItem> items = new HashMap<>();
         if (customer) {
-            for (ErpSale sale : saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
-                .select(ErpSale::getCustomerId, ErpSale::getTotalAmount, ErpSale::getGrossProfit)
-                .eq(ErpSale::getStatus, "CONFIRMED")
-                .ge(ErpSale::getBizDate, from)
-                .lt(ErpSale::getBizDate, to))) {
-                if (sale.getCustomerId() == null) {
+            for (DashboardAggregateVo row : rows(dashboardAggregateMapper.rankCustomerSales(tenantId, from, to))) {
+                if (row.getPartyId() == null) {
                     continue;
                 }
-                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(sale.getCustomerId(),
-                    id -> newRankItem(id));
-                item.setAmount(item.getAmount().add(nvl(sale.getTotalAmount())));
-                item.setGrossProfit(item.getGrossProfit().add(nvl(sale.getGrossProfit())));
-                item.setDocCount(item.getDocCount() + 1);
+                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(row.getPartyId(), this::newRankItem);
+                item.setAmount(nvl(row.getAmount()));
+                item.setGrossProfit(nvl(row.getGrossProfit()));
+                item.setDocCount(nvl(row.getDocCount()));
             }
-            for (FinReceipt receipt : receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
-                .select(FinReceipt::getCustomerId, FinReceipt::getAmount)
-                .eq(FinReceipt::getStatus, "CONFIRMED")
-                .ge(FinReceipt::getBizDate, from)
-                .lt(FinReceipt::getBizDate, to))) {
-                if (receipt.getCustomerId() == null) {
+            for (DashboardAggregateVo row : rows(dashboardAggregateMapper.rankCustomerReceipts(tenantId, from, to))) {
+                if (row.getPartyId() == null) {
                     continue;
                 }
-                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(receipt.getCustomerId(),
-                    id -> newRankItem(id));
-                item.setReceiptAmount(item.getReceiptAmount().add(nvl(receipt.getAmount())));
+                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(row.getPartyId(), this::newRankItem);
+                item.setReceiptAmount(nvl(row.getAmount()));
             }
             fillCustomerNames(items);
         } else {
-            for (ErpPurchase purchase : purchaseMapper.selectList(new LambdaQueryWrapper<ErpPurchase>()
-                .select(ErpPurchase::getSupplierId, ErpPurchase::getTotalAmount)
-                .eq(ErpPurchase::getStatus, "CONFIRMED")
-                .ge(ErpPurchase::getBizDate, from)
-                .lt(ErpPurchase::getBizDate, to))) {
-                if (purchase.getSupplierId() == null) {
+            for (DashboardAggregateVo row : rows(dashboardAggregateMapper.rankSupplierPurchases(tenantId, from, to))) {
+                if (row.getPartyId() == null) {
                     continue;
                 }
-                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(purchase.getSupplierId(),
-                    id -> newRankItem(id));
-                item.setAmount(item.getAmount().add(nvl(purchase.getTotalAmount())));
-                item.setDocCount(item.getDocCount() + 1);
+                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(row.getPartyId(), this::newRankItem);
+                item.setAmount(nvl(row.getAmount()));
+                item.setDocCount(nvl(row.getDocCount()));
             }
-            for (FinPayment payment : paymentMapper.selectList(new LambdaQueryWrapper<FinPayment>()
-                .select(FinPayment::getSupplierId, FinPayment::getAmount)
-                .eq(FinPayment::getStatus, "CONFIRMED")
-                .ge(FinPayment::getBizDate, from)
-                .lt(FinPayment::getBizDate, to))) {
-                if (payment.getSupplierId() == null) {
+            for (DashboardAggregateVo row : rows(dashboardAggregateMapper.rankSupplierPayments(tenantId, from, to))) {
+                if (row.getPartyId() == null) {
                     continue;
                 }
-                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(payment.getSupplierId(),
-                    id -> newRankItem(id));
-                item.setPaymentAmount(item.getPaymentAmount().add(nvl(payment.getAmount())));
+                DashboardPartnerRankVo.RankItem item = items.computeIfAbsent(row.getPartyId(), this::newRankItem);
+                item.setPaymentAmount(nvl(row.getAmount()));
             }
             fillSupplierNames(items);
         }
@@ -598,18 +542,23 @@ public class DashboardServiceImpl implements IDashboardService {
     private void fillCustomerMonth(DashboardPartnerMonthVo vo, Long partyId, Date from, Date to) {
         ErpCustomer customer = customerMapper.selectById(partyId);
         vo.setPartyName(customer == null ? null : customer.getName());
+        String tenantId = currentTenantId();
+        DashboardAggregateVo salesAggregate = dashboardAggregateMapper.customerSales(tenantId, partyId, from, to);
+        BigDecimal salesAmount = nvl(amount(salesAggregate));
+        BigDecimal grossProfit = nvl(grossProfit(salesAggregate));
+        vo.setDocCount(nvl(salesAggregate == null ? null : salesAggregate.getDocCount()));
+        vo.setSalesAmount(scaleMoney(salesAmount));
+        vo.setGrossProfit(scaleMoney(grossProfit));
+        vo.setGrossMargin(salesAmount.compareTo(BigDecimal.ZERO) > 0
+            ? grossProfit.multiply(BigDecimal.valueOf(100)).divide(salesAmount, 2, RoundingMode.HALF_UP)
+            : null);
 
-        List<ErpSale> sales = saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
+        for (ErpSale sale : saleMapper.selectList(new LambdaQueryWrapper<ErpSale>()
             .eq(ErpSale::getCustomerId, partyId)
             .eq(ErpSale::getStatus, "CONFIRMED")
             .ge(ErpSale::getBizDate, from)
             .lt(ErpSale::getBizDate, to)
-            .orderByDesc(ErpSale::getBizDate));
-        BigDecimal salesAmount = BigDecimal.ZERO;
-        BigDecimal grossProfit = BigDecimal.ZERO;
-        for (ErpSale sale : sales) {
-            salesAmount = salesAmount.add(nvl(sale.getTotalAmount()));
-            grossProfit = grossProfit.add(nvl(sale.getGrossProfit()));
+            .orderByDesc(ErpSale::getBizDate))) {
             DashboardPartnerMonthVo.Doc doc = new DashboardPartnerMonthVo.Doc();
             doc.setType("SALE");
             doc.setNo(sale.getNo());
@@ -619,31 +568,23 @@ public class DashboardServiceImpl implements IDashboardService {
             doc.setRemark(sale.getRemark());
             vo.getDocs().add(doc);
         }
-        vo.setDocCount((long) sales.size());
-        vo.setSalesAmount(salesAmount.setScale(2, RoundingMode.HALF_UP));
-        vo.setGrossProfit(grossProfit.setScale(2, RoundingMode.HALF_UP));
-        vo.setGrossMargin(salesAmount.compareTo(BigDecimal.ZERO) > 0
-            ? grossProfit.multiply(BigDecimal.valueOf(100)).divide(salesAmount, 2, RoundingMode.HALF_UP)
-            : null);
 
-        List<FinReceipt> receipts = receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
+        DashboardAggregateVo receiptAggregate = dashboardAggregateMapper.customerReceipts(tenantId, partyId, from, to);
+        vo.setReceiptAmount(scaleMoney(amount(receiptAggregate)));
+        for (FinReceipt receipt : receiptMapper.selectList(new LambdaQueryWrapper<FinReceipt>()
             .eq(FinReceipt::getCustomerId, partyId)
             .eq(FinReceipt::getStatus, "CONFIRMED")
             .ge(FinReceipt::getBizDate, from)
             .lt(FinReceipt::getBizDate, to)
-            .orderByDesc(FinReceipt::getBizDate));
-        BigDecimal receiptAmount = BigDecimal.ZERO;
-        for (FinReceipt receipt : receipts) {
-            receiptAmount = receiptAmount.add(nvl(receipt.getAmount()));
+            .orderByDesc(FinReceipt::getBizDate))) {
             DashboardPartnerMonthVo.Doc doc = new DashboardPartnerMonthVo.Doc();
             doc.setType("RECEIPT");
             doc.setNo(receipt.getNo());
             doc.setBizDate(receipt.getBizDate());
-            doc.setAmount(nvl(receipt.getAmount()));
+            doc.setAmount(signedReceiptAmount(receipt.getAmount(), receipt.getNegative()));
             doc.setRemark(receipt.getRemark());
             vo.getDocs().add(doc);
         }
-        vo.setReceiptAmount(receiptAmount.setScale(2, RoundingMode.HALF_UP));
     }
 
     /**
@@ -657,16 +598,16 @@ public class DashboardServiceImpl implements IDashboardService {
     private void fillSupplierMonth(DashboardPartnerMonthVo vo, Long partyId, Date from, Date to) {
         ErpSupplier supplier = supplierMapper.selectById(partyId);
         vo.setPartyName(supplier == null ? null : supplier.getName());
-
-        List<ErpPurchase> purchases = purchaseMapper.selectList(new LambdaQueryWrapper<ErpPurchase>()
+        String tenantId = currentTenantId();
+        DashboardAggregateVo purchaseAggregate = dashboardAggregateMapper.supplierPurchases(tenantId, partyId, from, to);
+        vo.setDocCount(nvl(purchaseAggregate == null ? null : purchaseAggregate.getDocCount()));
+        vo.setPurchaseAmount(scaleMoney(amount(purchaseAggregate)));
+        for (ErpPurchase purchase : purchaseMapper.selectList(new LambdaQueryWrapper<ErpPurchase>()
             .eq(ErpPurchase::getSupplierId, partyId)
             .eq(ErpPurchase::getStatus, "CONFIRMED")
             .ge(ErpPurchase::getBizDate, from)
             .lt(ErpPurchase::getBizDate, to)
-            .orderByDesc(ErpPurchase::getBizDate));
-        BigDecimal purchaseAmount = BigDecimal.ZERO;
-        for (ErpPurchase purchase : purchases) {
-            purchaseAmount = purchaseAmount.add(nvl(purchase.getTotalAmount()));
+            .orderByDesc(ErpPurchase::getBizDate))) {
             DashboardPartnerMonthVo.Doc doc = new DashboardPartnerMonthVo.Doc();
             doc.setType("PURCHASE");
             doc.setNo(purchase.getNo());
@@ -675,18 +616,15 @@ public class DashboardServiceImpl implements IDashboardService {
             doc.setRemark(purchase.getRemark());
             vo.getDocs().add(doc);
         }
-        vo.setDocCount((long) purchases.size());
-        vo.setPurchaseAmount(purchaseAmount.setScale(2, RoundingMode.HALF_UP));
 
-        List<FinPayment> payments = paymentMapper.selectList(new LambdaQueryWrapper<FinPayment>()
+        DashboardAggregateVo paymentAggregate = dashboardAggregateMapper.supplierPayments(tenantId, partyId, from, to);
+        vo.setPaymentAmount(scaleMoney(amount(paymentAggregate)));
+        for (FinPayment payment : paymentMapper.selectList(new LambdaQueryWrapper<FinPayment>()
             .eq(FinPayment::getSupplierId, partyId)
             .eq(FinPayment::getStatus, "CONFIRMED")
             .ge(FinPayment::getBizDate, from)
             .lt(FinPayment::getBizDate, to)
-            .orderByDesc(FinPayment::getBizDate));
-        BigDecimal paymentAmount = BigDecimal.ZERO;
-        for (FinPayment payment : payments) {
-            paymentAmount = paymentAmount.add(nvl(payment.getAmount()));
+            .orderByDesc(FinPayment::getBizDate))) {
             DashboardPartnerMonthVo.Doc doc = new DashboardPartnerMonthVo.Doc();
             doc.setType("PAYMENT");
             doc.setNo(payment.getNo());
@@ -695,6 +633,5 @@ public class DashboardServiceImpl implements IDashboardService {
             doc.setRemark(payment.getRemark());
             vo.getDocs().add(doc);
         }
-        vo.setPaymentAmount(paymentAmount.setScale(2, RoundingMode.HALF_UP));
     }
 }

@@ -63,6 +63,9 @@ public class ErpSaleReturnController extends BaseController {
     @PostMapping
     public R<ErpSaleReturnVo> add(@Valid @RequestBody ErpSaleReturnBo bo) {
         ConfirmPermission.check("erp:sale-return:audit", bo.getConfirm());
+        ConfirmPermission.check("erp:finance:receipt:confirm", Boolean.TRUE.equals(bo.getConfirm())
+            && Boolean.TRUE.equals(bo.getNeedRefund()) && bo.getRefundAmount() != null
+            && bo.getRefundAmount().signum() > 0);
         return R.ok(returnService.insert(bo));
     }
 
@@ -72,6 +75,9 @@ public class ErpSaleReturnController extends BaseController {
     @PutMapping("/{id}")
     public R<ErpSaleReturnVo> edit(@PathVariable Long id, @Valid @RequestBody ErpSaleReturnBo bo) {
         ConfirmPermission.check("erp:sale-return:audit", bo.getConfirm());
+        ConfirmPermission.check("erp:finance:receipt:confirm", Boolean.TRUE.equals(bo.getConfirm())
+            && Boolean.TRUE.equals(bo.getNeedRefund()) && bo.getRefundAmount() != null
+            && bo.getRefundAmount().signum() > 0);
         return R.ok(returnService.update(id, bo));
     }
 

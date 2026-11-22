@@ -61,7 +61,7 @@ public class StOpeningExcelService {
      * @param warehouseId 仓库 ID，可选
      */
     public void export(Long warehouseId, HttpServletResponse response) {
-        List<StOpeningVo> rows = openingService.listAll(warehouseId);
+        List<StOpeningVo> rows = openingService.listForExport(warehouseId);
         ExcelUtil.exportExcel(toExportRows(rows), SHEET_NAME, StOpeningExportVo.class, response);
     }
 
@@ -172,26 +172,18 @@ public class StOpeningExcelService {
     }
 
     /**
-     * VO 转导出行：补齐仓库编码/名称，金额 = 期初数量 × 期初成本。
+     * 名称由有界导出查询联查，避免每仓各查一次。金额 = 期初数量 × 期初成本。
      */
     List<StOpeningExportVo> toExportRows(List<StOpeningVo> rows) {
-        List<StOpeningExportVo> result = new ArrayList<>();
-        Map<Long, ErpWarehouse> warehouseCache = new HashMap<>();
+        List<StOpeningExportVo> result = new ArrayList<>(rows.size());
         for (StOpeningVo row : rows) {
             StOpeningExportVo export = new StOpeningExportVo();
             export.setProductCode(row.getProductCode());
             export.setProductName(row.getProductName());
+            export.setWarehouseCode(row.getWarehouseCode());
+            export.setWarehouseName(row.getWarehouseName());
             export.setQty(row.getQty());
             export.setUnitCost(row.getUnitCost());
-
-            if (row.getWarehouseId() != null) {
-                ErpWarehouse warehouse = warehouseCache.computeIfAbsent(row.getWarehouseId(),
-                    id -> warehouseMapper.selectById(id));
-                if (warehouse != null) {
-                    export.setWarehouseCode(warehouse.getCode());
-                    export.setWarehouseName(warehouse.getName());
-                }
-            }
 
             BigDecimal qty = row.getQty() == null ? BigDecimal.ZERO : row.getQty();
             BigDecimal unitCost = row.getUnitCost() == null ? BigDecimal.ZERO : row.getUnitCost();

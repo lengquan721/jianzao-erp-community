@@ -110,12 +110,7 @@
         </t-form>
       </div>
 
-      <div class="login-commercial">
-        <a href="https://jianzaoai360.cn" target="_blank" rel="noopener noreferrer">
-          {{ proxy.$t('login.commercial') }} →
-        </a>
-        <span>{{ proxy.$t('login.commercialHint') }}</span>
-      </div>
+      <!-- 商业推广未经部署方明确授权，不渲染对外入口；保留上游翻译但不据此推定授权。 -->
 
       <footer class="login-foot">
         <span class="copyright">{{ proxy.$t('login.copyright') }}</span>

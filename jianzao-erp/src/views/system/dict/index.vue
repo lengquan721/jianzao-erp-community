@@ -195,10 +195,9 @@
               @column-resize-change="(ctx: any) => saveColumnWidths('system/dict/data', ctx.columnsWidth)"
             >
               <template #dictLabel="{ row }">
-                <span
-                  v-if="(row.listClass === '' || row.listClass === 'default') && (row.cssClass === '' || row.cssClass == null)"
-                  >{{ row.dictLabel }}</span
-                >
+                <span v-if="(row.listClass === '' || row.listClass === 'default') && (row.cssClass === '' || row.cssClass == null)">{{
+                  row.dictLabel
+                }}</span>
                 <t-tag v-else :theme="listClassTheme(row.listClass)" :class="row.cssClass">{{ row.dictLabel }}</t-tag>
               </template>
               <template #createTime="{ row }">{{ proxy.parseTime(row.createTime) }}</template>

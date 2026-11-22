@@ -348,6 +348,7 @@ CREATE TABLE IF NOT EXISTS biz_sale_return (
   return_cost_amount DECIMAL(18,2) NOT NULL DEFAULT 0 COMMENT '成本回冲额=Σ行return_cost，确认时回填',
   need_refund TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否退款给客户',
   refund_amount DECIMAL(18,2) NOT NULL DEFAULT 0 COMMENT '退款金额',
+  refund_account_id BIGINT DEFAULT NULL COMMENT '草稿及确认时选定的退款结算账户',
   refund_receipt_id BIGINT DEFAULT NULL COMMENT '联动红字收款单ID',
   remark VARCHAR(500) DEFAULT '',
   confirmed_by BIGINT DEFAULT NULL,
@@ -588,6 +589,7 @@ CREATE TABLE IF NOT EXISTS fin_opening (
   party_type VARCHAR(8) NOT NULL COMMENT 'AR/AP',
   party_id BIGINT NOT NULL COMMENT '客户/供应商ID',
   amount DECIMAL(18,2) NOT NULL DEFAULT 0 COMMENT '期初金额',
+  -- 历史 NULL 保持未知；仅新建/编辑时由用户显式指定，不按上线时间回填。
   opening_date DATE DEFAULT NULL COMMENT '期初截止日（含当日），确认时作为台账 biz_date',
   status VARCHAR(16) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/CONFIRMED',
   remark VARCHAR(500) DEFAULT '',
@@ -782,6 +784,7 @@ CREATE TABLE IF NOT EXISTS print_template (
   engine VARCHAR(20) NOT NULL DEFAULT 'THYMELEAF' COMMENT '渲染引擎',
   variables_json TEXT COMMENT '变量说明',
   content LONGTEXT COMMENT 'HTML模板',
+  schema_json LONGTEXT COMMENT '设计器组件树 JSON，空表示源码模式',
   paper VARCHAR(20) NOT NULL DEFAULT 'A4' COMMENT 'A4/A5/241x140',
   version INT NOT NULL DEFAULT 1 COMMENT '版本号',
   is_default TINYINT NOT NULL DEFAULT 0 COMMENT '是否默认',

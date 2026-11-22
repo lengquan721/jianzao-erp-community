@@ -96,6 +96,11 @@ public class ErpPurchaseOrderVo {
      */
     private BigDecimal remainQty;
 
+    /**
+     * 已执行金额（确认入库正数、确认退货负数，含执行单运杂费）；列表与详情均直接返回。
+     */
+    private BigDecimal executedAmount;
+
     private List<ItemVo> items;
 
     /**
@@ -179,6 +184,9 @@ public class ErpPurchaseOrderVo {
          * 该单挂到本订单行的数量合计
          */
         private BigDecimal qty;
+
+        /** 确认入库金额为正、确认退货金额为负。 */
+        private BigDecimal amount;
 
         private String status;
 

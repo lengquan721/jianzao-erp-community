@@ -10,10 +10,7 @@
         <p class="subhead">{{ proxy.$t('login.subhead') }}</p>
       </div>
       <p class="register-footer">{{ proxy.$t('login.copyright') }}</p>
-      <p class="register-footer register-commercial">
-        <a href="https://jianzaoai360.cn" target="_blank" rel="noopener noreferrer">{{ proxy.$t('login.commercial') }}</a>
-        <span>· {{ proxy.$t('login.commercialHint') }}</span>
-      </p>
+      <!-- 商业推广未经部署方明确授权，不渲染对外入口；保留上游翻译但不据此推定授权。 -->
     </section>
 
     <section class="register-panel">
@@ -23,7 +20,13 @@
           <lang-select class="form-lang" />
         </div>
         <t-form-item v-if="tenantEnabled" name="tenantId" class="form-item">
-          <t-select v-model="registerForm.tenantId" filterable :placeholder="proxy.$t('register.selectPlaceholder')" :options="tenantOptions" size="large">
+          <t-select
+            v-model="registerForm.tenantId"
+            filterable
+            :placeholder="proxy.$t('register.selectPlaceholder')"
+            :options="tenantOptions"
+            size="large"
+          >
             <template #prefix-icon><svg-icon icon-class="company" class="input-icon" /></template>
           </t-select>
         </t-form-item>
@@ -33,12 +36,26 @@
           </t-input>
         </t-form-item>
         <t-form-item name="password" class="form-item">
-          <t-input v-model="registerForm.password" type="password" size="large" autocomplete="off" :placeholder="proxy.$t('register.password')" @enter="handleRegister">
+          <t-input
+            v-model="registerForm.password"
+            type="password"
+            size="large"
+            autocomplete="off"
+            :placeholder="proxy.$t('register.password')"
+            @enter="handleRegister"
+          >
             <template #prefix-icon><svg-icon icon-class="password" class="input-icon" /></template>
           </t-input>
         </t-form-item>
         <t-form-item name="confirmPassword" class="form-item">
-          <t-input v-model="registerForm.confirmPassword" type="password" size="large" autocomplete="off" :placeholder="proxy.$t('register.confirmPassword')" @enter="handleRegister">
+          <t-input
+            v-model="registerForm.confirmPassword"
+            type="password"
+            size="large"
+            autocomplete="off"
+            :placeholder="proxy.$t('register.confirmPassword')"
+            @enter="handleRegister"
+          >
             <template #prefix-icon><svg-icon icon-class="password" class="input-icon" /></template>
           </t-input>
         </t-form-item>
@@ -176,12 +193,10 @@ const handleRegister = async () => {
   const [err] = await to(register(registerForm.value));
   if (!err) {
     const username = registerForm.value.username;
-    // 注册成功提示属 C 层运行期弹层：$modal.alert 返回 void，无法承接原 EP alert 的 await 时序，
-    // 故按 TDesign 等价方案用 DialogPlugin 包装成真 Promise，确定后才跳转登录页，保留红色 innerHTML 与 success 主题
+    // 注册成功提示属 C 层运行期弹层：用 DialogPlugin 包装成 Promise，确认后才跳转登录页。
     await new Promise<void>((resolve) => {
-      // 内容来自 i18n，EP 原本也走 innerHTML，等价迁移不新增风险；TNode 保留原红色 span
-      const body: TNode = (h) => h('div', { innerHTML: '<span style="color: red; ">' + t('register.registerSuccess', { username }) + '</font>' });
-      let ins: DialogInstance;
+      // 以文本 VNode 插入动态用户名，保留红色提示但不解析为 HTML。
+      const body: TNode = (h) => h('div', [h('span', { style: { color: 'red' } }, t('register.registerSuccess', { username }))]);
       let dismissed = false;
       // 确定会连带触发 onConfirm 与 onClose，用标记保证只销毁一次、resolve 只结算一次
       const dismiss = () => {
@@ -191,7 +206,7 @@ const handleRegister = async () => {
         ins.destroy();
         resolve();
       };
-      ins = DialogPlugin.alert({
+      const ins: DialogInstance = DialogPlugin.alert({
         attach: 'body',
         header: '系统提示',
         theme: 'success',
@@ -408,7 +423,9 @@ onMounted(() => {
   color: var(--ink-secondary);
   font-size: 14px;
   cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease;
 }
 
 .slider-trigger:hover {

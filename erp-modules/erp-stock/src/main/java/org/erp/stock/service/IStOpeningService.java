@@ -1,5 +1,6 @@
 package org.erp.stock.service;
 
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.erp.stock.domain.bo.StOpeningBo;
 import org.erp.stock.domain.vo.StOpeningVo;
 
@@ -13,7 +14,10 @@ import java.util.List;
  */
 public interface IStOpeningService {
 
-    List<StOpeningVo> listAll(Long warehouseId);
+    TableDataInfo<StOpeningVo> pageDetails(Long warehouseId, int pageNum, int pageSize);
+
+    /** 导出专用：最多 5000 条，超过拒绝，不截断。 */
+    List<StOpeningVo> listForExport(Long warehouseId);
 
     StOpeningVo save(StOpeningBo bo);
 

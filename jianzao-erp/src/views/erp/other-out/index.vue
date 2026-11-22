@@ -221,7 +221,16 @@
 </template>
 
 <script setup name="ErpOtherOut" lang="ts">
-import { addOtherOut, confirmOtherOut, delOtherOut, getOtherOut, listOtherOut, updateOtherOut, voidOtherOut, withdrawOtherOut } from '@/api/erp/trade';
+import {
+  addOtherOut,
+  confirmOtherOut,
+  delOtherOut,
+  getOtherOut,
+  listOtherOut,
+  updateOtherOut,
+  voidOtherOut,
+  withdrawOtherOut
+} from '@/api/erp/trade';
 import { ERP_BILL_STATUS, ERP_COST_CATEGORY } from '@/api/erp/enums';
 import type { ErpBillStatus, ErpCostCategory } from '@/api/erp/enums';
 import type { ErpAmount, ErpId, ErpOtherOutForm, ErpOtherOutVO, ErpProductVO } from '@/api/erp/types';

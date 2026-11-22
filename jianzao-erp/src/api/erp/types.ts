@@ -37,6 +37,13 @@ export type {
 export type ErpAmount = string | number;
 export type ErpId = string | number;
 
+/** 常规接口包装（请求拦截器已解开 Axios 外层） */
+export interface ErpResult<T> {
+  code: number;
+  msg: string;
+  data: T;
+}
+
 /** 分页响应 */
 export interface ErpPageResult<T> {
   code: number;
@@ -46,6 +53,20 @@ export interface ErpPageResult<T> {
 }
 
 /* ------------------------------ 主数据 ------------------------------ */
+
+export interface ErpOptionQuery {
+  pageNum: number;
+  pageSize?: number;
+  keyword?: string;
+  code?: string;
+  status?: number;
+}
+
+export interface ErpOptionPage<T> {
+  rows: T[];
+  hasMore: boolean;
+  nextPageNum?: number | null;
+}
 
 export interface ErpProductVO {
   id: ErpId;
@@ -486,6 +507,8 @@ export interface ErpPurchaseOrderExecVO {
   bizDate?: string;
   /** 该单挂到本订单行的数量合计 */
   qty?: ErpAmount;
+  /** 含运杂费：执行单为正，退货为负。 */
+  amount?: ErpAmount | null;
   status?: ErpBillStatus;
   statusText?: string;
 }
@@ -517,6 +540,8 @@ export interface ErpPurchaseOrderVO {
   taxRate?: ErpAmount;
   /** 订单金额（不含运杂费）=Σ行 amount */
   goodsAmount?: ErpAmount;
+  /** 已确认执行金额（含运杂费）减已确认退货金额，无执行时为 0。 */
+  executedAmount: ErpAmount;
   remark?: string;
   confirmedAt?: string;
   withdrawnAt?: string;
@@ -628,6 +653,8 @@ export interface ErpSaleOrderExecVO {
   bizDate?: string;
   /** 该单挂到本订单行的数量合计 */
   qty?: ErpAmount;
+  /** 含运杂费：执行单为正，退货为负。 */
+  amount?: ErpAmount | null;
   status?: ErpBillStatus;
   statusText?: string;
 }
@@ -660,6 +687,8 @@ export interface ErpSaleOrderVO {
   taxRate?: ErpAmount;
   /** 订单金额（不含运杂费）=Σ行 amount */
   goodsAmount?: ErpAmount;
+  /** 已确认执行金额（含运杂费）减已确认退货金额，无执行时为 0。 */
+  executedAmount: ErpAmount;
   remark?: string;
   confirmedAt?: string;
   withdrawnAt?: string;
@@ -862,9 +891,12 @@ export interface ErpStockVO {
   productName?: string;
   spec?: string;
   unit?: string;
-  type: ErpProductType;
+  type?: ErpProductType | null;
   warehouseId?: ErpId;
   qty: ErpAmount;
+  qtyScale?: number;
+  minStock?: ErpAmount | null;
+  maxStock?: ErpAmount | null;
   avgCost?: ErpAmount;
   stockAmount?: ErpAmount;
   /** 成本缺失：有库存但均价为 0（DOC/26 §2.4 防线③） */
@@ -885,13 +917,49 @@ export interface ErpStockLogVO {
   partnerId?: ErpId;
   partnerName?: string;
   balanceAfter?: ErpAmount;
+  /** 业务日期，yyyy-MM-dd */
   bizDate?: string;
   seq?: number;
 }
 
-export interface ErpStockQuery {
+export interface ErpStockQuantityVO {
+  productId: ErpId;
+  qty: ErpAmount;
+}
+
+export interface ErpStockPageQuery {
+  pageNum: number;
+  pageSize?: number;
+}
+
+export interface ErpStockQuery extends ErpStockPageQuery {
   keyword?: string;
   type?: ErpProductType;
+}
+
+export interface ErpStockLogWindow {
+  productId: ErpId;
+  startDate: string;
+  endDate: string;
+  pageSize?: number;
+}
+
+export interface ErpStockLogCursor {
+  beforeDate: string;
+  beforeId: ErpId;
+}
+
+export type ErpStockLogQuery = ErpStockLogWindow & (ErpStockLogCursor | { beforeDate?: never; beforeId?: never });
+
+export interface ErpStockLogPageVO {
+  rows: ErpStockLogVO[];
+  hasMore: boolean;
+  nextBeforeDate?: string | null;
+  nextBeforeId?: ErpId | null;
+}
+
+export interface StOpeningQuery extends ErpStockPageQuery {
+  warehouseId?: ErpId;
 }
 
 export interface StOpeningVO {
@@ -900,6 +968,8 @@ export interface StOpeningVO {
   productCode?: string;
   productName?: string;
   warehouseId: ErpId;
+  warehouseCode?: string;
+  warehouseName?: string;
   qty: ErpAmount;
   /** 数量精度位数 0~3（DOC/26 §10） */
   qtyScale?: number;
@@ -959,14 +1029,29 @@ export interface FinArApSummaryVO {
   parties: FinArApPartySummary[];
 }
 
+export interface FinArApSummaryPageQuery {
+  partyType: ErpPartyType;
+  pageNum: number;
+  pageSize: number;
+}
+
+export interface FinArApDetailPageQuery extends FinArApSummaryPageQuery {
+  partyId: ErpId;
+}
+
+/** 金额合计覆盖全部匹配台账；parties 仅当前页，total 为往来单位总数。 */
+export interface FinArApSummaryPageVO extends FinArApSummaryVO {
+  total: number;
+}
+
 export interface FinOpeningVO {
   id: ErpId;
   partyType: ErpPartyType;
   partyId: ErpId;
   partyName?: string;
   amount: ErpAmount;
-  /** 期初截止日（含当日），决定期初在哪个账期可见 */
-  openingDate?: string;
+  /** 期初截止日（含当日）；历史 NULL 只读保留，不自动回填。 */
+  openingDate?: string | null;
   status: ErpBillStatus;
   /** 状态中文文案（后端回填，见 org.erp.common.enums.StatusText） */
   statusText?: string;
@@ -976,10 +1061,17 @@ export interface FinOpeningVO {
   overwritten?: boolean;
 }
 
+/** 往来期初数据库分页；partyType 省略时包含 AR/AP，页大小为 1..200。 */
+export interface FinOpeningPageQuery {
+  partyType?: ErpPartyType;
+  pageNum: number;
+  pageSize: number;
+}
+
 export interface FinOpeningForm {
   partyType: ErpPartyType;
   partyId: ErpId;
-  amount: number;
+  amount: ErpAmount;
   /** 期初截止日 yyyy-MM-dd */
   openingDate: string;
   remark?: string;
@@ -990,6 +1082,9 @@ export interface FinReceiptAllocVO {
   receiptId?: ErpId;
   arApId: ErpId;
   amount: ErpAmount;
+  /** 详情回填来源，已结清台账也可识别；存量允许为空。 */
+  sourceType?: ErpArApSourceType;
+  sourceNo?: string;
 }
 
 export interface FinReceiptVO {
@@ -1002,6 +1097,8 @@ export interface FinReceiptVO {
   account?: string;
   /** 结算账户ID（存量单为空） */
   accountId?: ErpId;
+  /** 仅销售退货联动退款为1；普通收款界面不可变更 */
+  negative?: number;
   remark?: string;
   status: ErpBillStatus;
   /** 状态中文文案（后端回填，见 org.erp.common.enums.StatusText） */
@@ -1038,6 +1135,9 @@ export interface FinPaymentAllocVO {
   paymentId?: ErpId;
   arApId: ErpId;
   amount: ErpAmount;
+  /** 详情回填来源，已结清台账也可识别；存量允许为空。 */
+  sourceType?: ErpArApSourceType;
+  sourceNo?: string;
 }
 
 export interface FinPaymentVO {
@@ -1160,6 +1260,8 @@ export interface PrintTemplateVO {
   status?: number;
   /** 变量说明 JSON */
   variablesJson?: string;
+  /** 设计器组件树 JSON；为空表示源码模式 */
+  schemaJson?: string;
   createTime?: string;
 }
 
@@ -1169,7 +1271,10 @@ export interface PrintTemplateForm {
   code?: string;
   name: string;
   scene: ErpPrintScene;
-  content: string;
+  /** HTML 源码模式必填；设计器模式由后端编译生成，可不传 */
+  content?: string;
+  /** 设计器组件树 JSON；为空表示源码模式 */
+  schemaJson?: string;
   paper?: string;
   /** 专属客户，留空为通用模板 */
   customerId?: ErpId;
@@ -1309,6 +1414,7 @@ export interface SaleReturnVO {
   returnCostAmount?: ErpAmount;
   needRefund?: number;
   refundAmount?: ErpAmount;
+  refundAccountId?: ErpId;
   refundReceiptId?: ErpId;
   remark?: string;
   createTime?: string;
@@ -1386,7 +1492,6 @@ export interface PurchaseReturnQuery extends PageQuery {
   supplierId?: ErpId;
   status?: string;
 }
-
 
 /* ------------------------------ 工作台 ------------------------------ */
 
@@ -1513,4 +1618,60 @@ export interface DashboardPartnerRankVO {
   /** 统计月份 yyyy-MM */
   month?: string;
   items: DashboardPartnerRankItem[];
+}
+
+/* ------------------------------ 打印设计器 ------------------------------ */
+
+/** 设计器区块类型 */
+export type PrintBlockType = 'TITLE' | 'TEXT' | 'FIELD' | 'IMAGE' | 'TABLE' | 'DIVIDER' | 'SIGNATURE' | 'PAGE_BREAK' | 'SPACER';
+
+/** 表格列配置 */
+export interface PrintTableColumn {
+  /** 数据源字段名 */
+  key: string;
+  /** 表头文字 */
+  label: string;
+  /** 列宽百分比 1-100，空为自适应 */
+  width?: number | null;
+  /** 对齐 */
+  align?: 'left' | 'center' | 'right';
+  /** 是否显示 */
+  visible?: boolean;
+  /** 数值列（右对齐） */
+  numeric?: boolean;
+}
+
+/** 设计器区块 */
+export interface PrintDesignBlock {
+  id: string;
+  type: PrintBlockType;
+  /** 类型相关属性，按 type 取用 */
+  props: Record<string, any>;
+  /** 通用样式：fontSize / fontWeight / textAlign / color / marginTop / marginBottom */
+  style: Record<string, any>;
+}
+
+/** 设计器组件树 */
+export interface PrintDesignSchema {
+  schemaVersion?: number;
+  paper?: string;
+  pageMargin?: number;
+  fontFamily?: string;
+  fontSize?: number;
+  blocks: PrintDesignBlock[];
+}
+
+/** 模板变量字典项 */
+export interface PrintVariable {
+  key: string;
+  label: string;
+  example?: string;
+  group?: string;
+}
+
+/** 设计器元数据：变量字典 + 表格数据源与列 */
+export interface PrintDesignMeta {
+  fields: PrintVariable[];
+  tableSources: PrintVariable[];
+  columns: Record<string, PrintVariable[]>;
 }

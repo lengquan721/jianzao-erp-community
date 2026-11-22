@@ -1,21 +1,30 @@
 import request from '@/utils/request';
-import { AxiosPromise } from 'axios';
+import type { AxiosPromise } from 'axios';
 import type {
   ErpId,
+  ErpPageResult,
+  ErpResult,
   ErpStockAlertVO,
-  ErpStockLogVO,
+  ErpStockLogPageVO,
+  ErpStockLogQuery,
+  ErpStockQuantityVO,
   ErpStockQuery,
   ErpStockVO,
   StOpeningForm,
+  StOpeningQuery,
   StOpeningVO
 } from './types';
+import { fetchIdBatches } from './idBatches';
 import type { ErpImportResult } from './master';
 
 export type { ErpImportResult } from './master';
 
-/** 库存余额（成品/原料） */
-export function listStockBalances(query: ErpStockQuery): AxiosPromise<ErpStockVO[]> {
-  return request({ url: '/erp/stock/balances', method: 'get', params: query });
+// 这三个列表在表格内呈现失败状态，不让已过期的请求额外弹出错误。
+const listHeaders = { silentError: 'true', silentHttpError: 'true' };
+
+/** 库存余额（成品/原料），响应的 rows / total 位于顶层。 */
+export function listStockBalances(query: ErpStockQuery): Promise<ErpPageResult<ErpStockVO>> {
+  return request<unknown, ErpPageResult<ErpStockVO>>({ url: '/erp/stock/balances', method: 'get', params: query, headers: listHeaders });
 }
 
 /** 库存上下限预警明细（DOC/25 §3.2，不分页） */
@@ -23,9 +32,14 @@ export function listStockAlerts(query: { type?: string; productId?: ErpId }): Ax
   return request({ url: '/erp/stock/alerts', method: 'get', params: query });
 }
 
-/** 按产品查库存流水 */
-export function listStockLogs(productId: string | number): AxiosPromise<ErpStockLogVO[]> {
-  return request({ url: '/erp/stock/logs', method: 'get', params: { productId } });
+/** 全仓数量：只查调用方所需的商品 ID，不扫描余额页。 */
+export function listStockQuantities(ids: readonly ErpId[]): Promise<ErpStockQuantityVO[]> {
+  return fetchIdBatches<ErpStockQuantityVO>('/erp/stock/balances/quantities', ids);
+}
+
+/** 按商品和业务日期窗查一页，下一页使用后端返回的日期 + ID。 */
+export function listStockLogs(query: ErpStockLogQuery): Promise<ErpResult<ErpStockLogPageVO>> {
+  return request<unknown, ErpResult<ErpStockLogPageVO>>({ url: '/erp/stock/logs', method: 'get', params: query, headers: listHeaders });
 }
 
 /** 查询单个产品的库存余额 */
@@ -35,8 +49,8 @@ export function getStockBalance(productId: string | number): AxiosPromise<ErpSto
 
 /* ------------------------------ 库存期初 ------------------------------ */
 
-export function listStOpening(warehouseId?: string | number): AxiosPromise<StOpeningVO[]> {
-  return request({ url: '/erp/stock/opening/list', method: 'get', params: { warehouseId } });
+export function listStOpening(query: StOpeningQuery): Promise<ErpPageResult<StOpeningVO>> {
+  return request<unknown, ErpPageResult<StOpeningVO>>({ url: '/erp/stock/opening/list', method: 'get', params: query, headers: listHeaders });
 }
 
 /** 期初库存导出（按仓库筛选，后端不分页） */

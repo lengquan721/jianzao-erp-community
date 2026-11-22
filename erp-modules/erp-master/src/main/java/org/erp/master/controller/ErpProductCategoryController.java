@@ -10,6 +10,10 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.erp.master.domain.bo.MasterOptionIdsBo;
+import org.erp.master.domain.bo.MasterOptionQuery;
+import org.erp.master.domain.vo.MasterOptionPageVo;
+import org.erp.master.service.MasterOptionService;
 import org.erp.master.domain.bo.ErpProductCategoryBo;
 import org.erp.master.domain.vo.ErpProductCategoryVo;
 import org.erp.master.service.IErpProductCategoryService;
@@ -28,6 +32,7 @@ import java.util.List;
 public class ErpProductCategoryController extends BaseController {
 
     private final IErpProductCategoryService productCategoryService;
+    private final MasterOptionService optionService;
 
     @SaCheckPermission("erp:product-category:list")
     @GetMapping("/list")
@@ -38,13 +43,23 @@ public class ErpProductCategoryController extends BaseController {
     }
 
     /**
-     * 分类下拉：返回全部未删除分类（含停用）。
-     * 商品列表筛选需要能选到停用分类（存量商品仍归该组），表单下拉由前端按 status=1 过滤。
+     * 分类远程下拉：按页返回未删除分类，默认仍含停用，调用方继续翻页而不是截断。
+     * 商品列表筛选需要能选到停用分类（存量商品仍归该组），表单可传 status=1。
      */
     @SaCheckPermission("erp:product-category:list")
     @GetMapping("/options")
-    public R<List<ErpProductCategoryVo>> options(@RequestParam(required = false) String keyword) {
-        return R.ok(productCategoryService.selectList(keyword));
+    public R<MasterOptionPageVo<ErpProductCategoryVo>> options(@RequestParam(required = false) String keyword,
+                                                             @RequestParam(required = false) String code,
+                                                             @RequestParam(required = false) Integer status,
+                                                             @RequestParam int pageNum,
+                                                             @RequestParam(defaultValue = MasterOptionQuery.DEFAULT_SIZE) int pageSize) {
+        return R.ok(optionService.categories(MasterOptionQuery.of(keyword, code, status, pageNum, pageSize)));
+    }
+
+    @SaCheckPermission("erp:product-category:list")
+    @PostMapping("/options/by-ids")
+    public R<List<ErpProductCategoryVo>> optionsByIds(@RequestBody MasterOptionIdsBo request) {
+        return R.ok(optionService.categoriesByIds(request.ids()));
     }
 
     @SaCheckPermission("erp:product-category:query")

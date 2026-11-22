@@ -101,7 +101,13 @@
             </template>
           </t-table>
 
-          <pagination v-show="total > 0" v-model:page="queryParams.pageNum" v-model:limit="queryParams.pageSize" :total="total" @pagination="getList" />
+          <pagination
+            v-show="total > 0"
+            v-model:page="queryParams.pageNum"
+            v-model:limit="queryParams.pageSize"
+            :total="total"
+            @pagination="getList"
+          />
         </div>
       </t-col>
     </t-row>
@@ -117,7 +123,13 @@
           <t-row :gutter="16">
             <t-col :span="3">
               <t-form-item label="客户" name="customerId">
-                <PartnerSelect v-model="form.customerId" kind="customer" placeholder="请选择客户" :disabled="!!form.id" @change="() => handleCustomerChange()" />
+                <PartnerSelect
+                  v-model="form.customerId"
+                  kind="customer"
+                  placeholder="请选择客户"
+                  :disabled="!!form.id"
+                  @change="() => handleCustomerChange()"
+                />
               </t-form-item>
             </t-col>
             <t-col :span="4">
@@ -239,7 +251,9 @@
           <div class="flex items-center gap-2">
             <t-button theme="default" variant="outline" @click="dialog.visible = false">取 消</t-button>
             <t-button v-if="!readonly" theme="primary" variant="outline" @click="submitForm(false)">保存草稿</t-button>
-            <t-button v-if="!readonly && checkPermi(['erp:sale-return:audit'])" theme="success" :loading="submitLoading" @click="submitForm(true)">保存并确认</t-button>
+            <t-button v-if="!readonly && checkPermi(['erp:sale-return:audit'])" theme="success" :loading="submitLoading" @click="submitForm(true)"
+              >保存并确认</t-button
+            >
           </div>
         </div>
       </template>
@@ -262,15 +276,7 @@ import {
 } from '@/api/erp/trade';
 import { accountOptions as accountOptionsFn } from '@/api/erp/account';
 import { ERP_BILL_STATUS } from '@/api/erp/enums';
-import type {
-  ErpAmount,
-  ErpBillStatus,
-  ErpId,
-  FinAccountVO,
-  SaleReturnItemVO,
-  SaleReturnQuery,
-  SaleReturnVO
-} from '@/api/erp/types';
+import type { ErpAmount, ErpBillStatus, ErpId, FinAccountVO, SaleReturnItemVO, SaleReturnQuery, SaleReturnVO } from '@/api/erp/types';
 import { formatMoney, formatQtyByScale, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
@@ -294,7 +300,7 @@ const route = useRoute();
 
 const returnList = ref<SaleReturnVO[]>([]);
 const returnableOrders = ref<SaleReturnVO[]>([]);
-const accounts = ref<FinAccountVO[]>([]);
+const accounts = ref<Array<{ id: ErpId; name: string }>>([]);
 const loading = ref(true);
 const detailLoading = ref(false);
 const submitLoading = ref(false);
@@ -402,7 +408,17 @@ const returnableOrderOptions = computed(() =>
 const selectedSaleLabel = computed(() => returnableOrderOptions.value.find((o) => String(o.value) === String(form.saleId ?? ''))?.label ?? '');
 
 /** 退款账户下拉 */
-const refundAccountOptions = computed(() => accounts.value.map((acc) => ({ value: acc.id, label: acc.name })));
+const refundAccountOptions = computed(() => {
+  const selectedId = form.refundAccountId;
+  const options = accounts.value.map(({ id, name }) => ({
+    value: selectedId != null && String(id) === String(selectedId) ? selectedId : id,
+    label: name
+  }));
+  if (selectedId != null && !options.some(({ value }) => String(value) === String(selectedId))) {
+    return [...options, { value: selectedId, label: `原退款账户（${selectedId}）`, disabled: true }];
+  }
+  return options;
+});
 
 /**
  * 退货数量输入上限
@@ -514,7 +530,7 @@ const loadDetail = async (id: ErpId, isReadonly: boolean) => {
       bizDate: toDate(detail.bizDate),
       needRefund: detail.needRefund === 1,
       refundAmount: Number(detail.refundAmount ?? 0),
-      refundAccountId: undefined,
+      refundAccountId: detail.refundAccountId ?? undefined,
       remark: detail.remark || '',
       items: (detail.items ?? []).map((r) => ({
         ...r,
@@ -588,9 +604,7 @@ const submitForm = async (confirm: boolean) => {
     return;
   }
   if (confirm) {
-    await proxy?.$modal.confirm(
-      `确认退货？库存回增、应收红冲${form.needRefund && Number(form.refundAmount) > 0 ? '，退款单将同步确认' : ''}`
-    );
+    await proxy?.$modal.confirm(`确认退货？库存回增、应收红冲${form.needRefund && Number(form.refundAmount) > 0 ? '，退款单将同步确认' : ''}`);
   }
   submitLoading.value = true;
   try {

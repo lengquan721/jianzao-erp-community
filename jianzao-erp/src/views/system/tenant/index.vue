@@ -17,8 +17,12 @@
               <t-input v-model="queryParams.companyName" placeholder="请输入企业名称" clearable class="query-w-md" @enter="handleQuery" />
             </t-form-item>
             <div class="erp-filter-actions">
-              <t-button theme="primary" @click="handleQuery"><template #icon><SearchIcon /></template>搜索</t-button>
-              <t-button theme="default" variant="outline" @click="resetQuery"><template #icon><RefreshIcon /></template>重置</t-button>
+              <t-button theme="primary" @click="handleQuery"
+                ><template #icon><SearchIcon /></template>搜索</t-button
+              >
+              <t-button theme="default" variant="outline" @click="resetQuery"
+                ><template #icon><RefreshIcon /></template>重置</t-button
+              >
             </div>
           </t-form>
         </t-card>
@@ -116,10 +120,26 @@
           <t-input v-model="form.password" type="password" placeholder="请输入系统用户密码" :maxlength="20" />
         </t-form-item>
         <t-form-item label="租户套餐" name="packageId">
-          <t-select v-model="form.packageId" :disabled="!!form.tenantId" placeholder="请选择租户套餐" clearable :options="packageOptions" style="width: 100%" />
+          <t-select
+            v-model="form.packageId"
+            :disabled="!!form.tenantId"
+            placeholder="请选择租户套餐"
+            clearable
+            :options="packageOptions"
+            style="width: 100%"
+          />
         </t-form-item>
-        <t-form-item label="过期时间" name="expireTime">
-          <t-date-picker v-model="form.expireTime" clearable enable-time-picker value-type="YYYY-MM-DD HH:mm:ss" placeholder="请选择过期时间" style="width: 100%" @pick="handleExpireTimePick" />
+        <t-form-item label="过期时间" name="expireTime" help="日期面板确认后生效；点击清除按钮表示清空，取消选择保持原值">
+          <t-date-picker
+            :model-value="form.expireTime ?? ''"
+            @change="handleExpireTimeChange"
+            @clear="handleExpireTimeClear"
+            clearable
+            enable-time-picker
+            value-type="YYYY-MM-DD HH:mm:ss"
+            placeholder="请选择过期时间"
+            style="width: 100%"
+          />
         </t-form-item>
         <t-form-item label="用户数量" name="accountCount">
           <t-input v-model="form.accountCount" placeholder="请输入用户数量" />
@@ -294,7 +314,8 @@ const cancel = () => {
 // 表单重置：t-form 用 reset()，不再用 resetFields()
 const reset = () => {
   form.value = { ...initFormData };
-  tenantFormRef.value?.reset();
+  expireTimeIntent.value = 'unchanged';
+  tenantFormRef.value?.clearValidate();
 };
 
 /** 搜索按钮操作 */
@@ -339,12 +360,22 @@ const handleUpdate = async (row?: TenantVO) => {
   dialog.title = '修改租户';
 };
 
-/**
- * 日期面板选中后立即回写表单：面板需再点自身「确定」才提交，直接点弹窗「确定」会提交旧值
- * @param value 日期选择器回传的日期对象
- */
-const handleExpireTimePick = (value: Date | string | number) => {
-  form.value.expireTime = proxy?.parseTime(value) ?? '';
+// 不使用上游 @pick 直接回写：带时间的面板 pick 是临时选择，取消不得清空/修改原值。
+const expireTimeIntent = ref<'unchanged' | 'clear' | 'set'>('unchanged');
+const handleExpireTimeChange = (value: string | number | Date | Array<string | number | Date>) => {
+  if (typeof value !== 'string' || !value) return;
+  form.value.expireTime = value;
+  expireTimeIntent.value = 'set';
+};
+const handleExpireTimeClear = () => {
+  form.value.expireTime = null;
+  expireTimeIntent.value = 'clear';
+};
+const tenantPayload = (): TenantForm => {
+  const payload = { ...form.value };
+  if (expireTimeIntent.value === 'unchanged') delete payload.expireTime;
+  else if (expireTimeIntent.value === 'clear') payload.expireTime = null;
+  return payload;
 };
 
 /** 提交按钮：t-form.validate() 失败 resolve(false)，判定 r===true||r===undefined（DOC/35 §5） */
@@ -354,9 +385,9 @@ const submitForm = async () => {
   if (!valid) return;
   buttonLoading.value = true;
   if (form.value.id) {
-    await updateTenant(form.value).finally(() => (buttonLoading.value = false));
+    await updateTenant(tenantPayload()).finally(() => (buttonLoading.value = false));
   } else {
-    await addTenant(form.value).finally(() => (buttonLoading.value = false));
+    await addTenant(tenantPayload()).finally(() => (buttonLoading.value = false));
   }
   proxy?.$modal.msgSuccess('操作成功');
   dialog.visible = false;

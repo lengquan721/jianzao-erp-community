@@ -9,13 +9,13 @@
     <div v-show="activeTab === 'stock'" class="erp-surface erp-panel">
       <div class="erp-panel__head">
         <div class="flex flex-wrap items-center gap-2">
-          <t-select
+          <ErpPagedSelect
             v-model="stWarehouseId"
-            clearable
             placeholder="全部仓库"
-            :options="warehouseSelectOptions"
+            :fetch-page="warehouseOptions"
+            :fetch-by-ids="warehouseOptionsByIds"
             style="width: 160px"
-            @change="getStList"
+            @change="handleStQuery"
           />
           <t-button v-hasPermi="['erp:stock:opening']" theme="primary" variant="outline" @click="handleAdd">
             <template #icon><PlusIcon /></template>
@@ -59,10 +59,10 @@
         :resizable="true"
         size="small"
         cell-empty-content="-"
-        :empty="'暂无库存期初数据'"
+        :empty="stFailed ? '库存期初加载失败，请重试' : '暂无库存期初数据'"
         @column-resize-change="(ctx: any) => saveColumnWidths('opening/stock-list', ctx.columnsWidth)"
       >
-        <template #warehouseId="{ row }">{{ warehouseName(row.warehouseId) }}</template>
+        <template #warehouseId="{ row }">{{ warehouseName(row) }}</template>
         <template #qty="{ row }">{{ formatQtyByScale(row.qty, row.qtyScale) }}</template>
         <template #unitCost="{ row }">{{ formatMoney(row.unitCost) }}</template>
         <template #amount="{ row }">{{ formatMoney(rowAmount(row)) }}</template>
@@ -94,13 +94,14 @@
           </div>
         </template>
       </t-table>
+      <pagination v-show="stTotal > 0" v-model:page="stPageNum" v-model:limit="stPageSize" :total="stTotal" @pagination="getStList" />
     </div>
 
     <!-- ==================== 往来期初 ==================== -->
     <div v-show="activeTab === 'finance'" class="erp-surface erp-panel">
       <div class="erp-panel__head">
         <div class="flex flex-wrap items-center gap-2">
-          <t-select v-model="finPartyType" :options="partyTypeOptions" style="width: 160px" @change="getFinList" />
+          <t-select v-model="finPartyType" :options="partyTypeOptions" style="width: 160px" @change="handleFinQuery" />
           <t-button v-hasPermi="['erp:finance:opening']" theme="primary" variant="outline" @click="handleFinAdd">
             <template #icon><PlusIcon /></template>
             新增期初
@@ -143,7 +144,7 @@
         :resizable="true"
         size="small"
         cell-empty-content="-"
-        :empty="'暂无往来期初数据'"
+        :empty="finFailed ? '往来期初加载失败，请重试' : '暂无往来期初数据'"
         @column-resize-change="(ctx: any) => saveColumnWidths('opening/finance-list', ctx.columnsWidth)"
       >
         <template #partyType="{ row }">{{ partyTypeLabel(row.partyType) }}</template>
@@ -171,6 +172,7 @@
           </div>
         </template>
       </t-table>
+      <pagination v-show="finTotal > 0" v-model:page="finPageNum" v-model:limit="finPageSize" :total="finTotal" @pagination="getFinList" />
     </div>
 
     <!-- 期初导入（库存 / 往来共用，打开时切换地址） -->
@@ -212,7 +214,7 @@
     </t-dialog>
 
     <!-- 导入结果 -->
-    <t-dialog v-model:visible="importResult.visible" header="导入结果" width="620px" attach="body">
+    <t-dialog v-model:visible="importResult.visible" header="导入结果" width="620px" attach="body" :destroy-on-close="true">
       <t-descriptions v-if="importResult.data" :column="4" bordered size="small">
         <t-descriptions-item label="总行数">{{ importResult.data.total }}</t-descriptions-item>
         <t-descriptions-item label="成功">{{ importResult.data.success }}</t-descriptions-item>
@@ -253,7 +255,13 @@
           <ProductSelect v-model="stForm.productId" show-category-filter placeholder="请选择产品" @change="handleStProductChange" />
         </t-form-item>
         <t-form-item label="仓库" name="warehouseId">
-          <t-select v-model="stForm.warehouseId" placeholder="请选择仓库" :options="warehouseSelectOptions" style="width: 100%" />
+          <ErpPagedSelect
+            v-model="stForm.warehouseId"
+            placeholder="请选择仓库"
+            :fetch-page="warehouseOptions"
+            :fetch-by-ids="warehouseOptionsByIds"
+            style="width: 100%"
+          />
         </t-form-item>
         <t-form-item label="数量" name="qty">
           <!-- 精度随商品切换时强制重建控件，避免沿用上一精度的显示值 -->
@@ -295,7 +303,7 @@
           />
         </t-form-item>
         <t-form-item label="期初金额" name="amount">
-          <t-input-number v-model="finForm.amount" :decimal-places="2" :min="0" theme="normal" align="right" style="width: 100%" />
+          <t-input-number v-model="finForm.amount" large-number :decimal-places="2" :min="0" theme="normal" align="right" style="width: 100%" />
         </t-form-item>
         <t-form-item label="截止日" name="openingDate">
           <t-date-picker
@@ -322,22 +330,25 @@
 </template>
 
 <script setup name="ErpOpening" lang="ts">
-import { confirmFinOpening, listFinOpening, saveFinOpening, unconfirmFinOpening } from '@/api/erp/finance';
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { confirmFinOpening, listFinOpeningPage, saveFinOpening, unconfirmFinOpening } from '@/api/erp/finance';
 import { confirmStOpening, delStOpening, listStOpening, saveStOpening, unconfirmStOpening } from '@/api/erp/stock';
-import { warehouseOptions } from '@/api/erp/master';
+import { warehouseOptions, warehouseOptionsByIds } from '@/api/erp/master';
 import type { ErpImportResult } from '@/api/erp/master';
 import { ERP_PARTY_TYPE } from '@/api/erp/enums';
 import type { ErpPartyType } from '@/api/erp/enums';
-import type { ErpAmount, ErpId, ErpProductVO, ErpWarehouseVO, FinOpeningVO, StOpeningVO } from '@/api/erp/types';
+import type { ErpAmount, ErpId, ErpProductVO, FinOpeningVO, StOpeningVO } from '@/api/erp/types';
 import { formatMoney, formatQtyByScale, normalizeQty, qtyPrecision, qtyStep, roundMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 import { globalHeaders } from '@/utils/request';
+import { sanitizeImportMessage } from '@/utils/sanitizeImportMessage';
 // 列宽记忆：拖拽后按表名存 localStorage，进页面还原（见 hooks/useTableColumnWidth）
 import { mergeSavedWidths, saveColumnWidths } from '@/hooks/useTableColumnWidth';
 import PartnerSelect from '@/components/erp/PartnerSelect.vue';
 import ProductSelect from '@/components/erp/ProductSelect.vue';
 import StatusTag from '@/components/erp/StatusTag.vue';
 import type { SuccessContext, UploadFailContext, UploadFile, UploadInstanceFunctions } from 'tdesign-vue-next';
+import ErpPagedSelect from '@/components/erp/ErpPagedSelect.vue';
 import { CheckCircleIcon, ChevronDownIcon, DeleteIcon, DownloadIcon, Edit1Icon, PlusIcon, RollbackIcon, UploadIcon } from 'tdesign-icons-vue-next';
 
 const { proxy } = getCurrentInstance() as ComponentInternalInstance;
@@ -348,15 +359,14 @@ const activeTab = ref<'stock' | 'finance'>('stock');
 /** 库存期初 */
 const stList = ref<StOpeningVO[]>([]);
 const stLoading = ref(false);
+const stFailed = ref(false);
+const stTotal = ref(0);
+const stPageNum = ref(1);
+const stPageSize = ref(20);
 /** 已换 t-form：ref 提供 clearValidate()/validate() */
 const stFormRef = ref<any>();
-const warehouseList = ref<ErpWarehouseVO[]>([]);
 /** 库存期初仓库筛选（同时作为导出参数） */
-const stWarehouseId = ref<ErpId | ''>('');
-
-/** 仓库下拉：t-select 需要 { label, value }，沿用「编码 名称」展示 */
-const warehouseSelectOptions = computed(() => warehouseList.value.map((item) => ({ label: `${item.code} ${item.name}`, value: item.id })));
-
+const stWarehouseId = ref<ErpId>();
 /** 往来类型下拉：应收（客户）/ 应付（供应商） */
 const partyTypeOptions = [
   { label: '应收（客户）', value: 'AR' },
@@ -442,6 +452,11 @@ const stIdentityChanged = computed(
 /** 往来期初 */
 const finList = ref<FinOpeningVO[]>([]);
 const finLoading = ref(false);
+const finFailed = ref(false);
+const finTotal = ref(0);
+const finPageNum = ref(1);
+const finPageSize = ref(20);
+let finRequest = 0;
 /** 已换 t-form：ref 提供 clearValidate()/validate() */
 const finFormRef = ref<any>();
 /** 往来类型筛选 */
@@ -458,19 +473,11 @@ interface FinFormState {
   originPartyId?: ErpId;
   partyType: ErpPartyType;
   partyId?: ErpId;
-  amount: number;
-  /** 期初截止日 yyyy-MM-dd：期初金额表示该日期之前的账面余额 */
+  amount: ErpAmount;
+  /** 期初截止日 yyyy-MM-dd（含当日）；必须由用户显式选择。 */
   openingDate: string;
   remark: string;
 }
-
-/** 上月末 yyyy-MM-dd：期初最常用的截止日，作为新增时的默认值，可改 */
-const lastMonthEnd = (): string => {
-  const d = new Date();
-  d.setDate(1);
-  d.setDate(0);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
 
 const createFinForm = (): FinFormState => ({
   originPartyType: undefined,
@@ -478,7 +485,7 @@ const createFinForm = (): FinFormState => ({
   partyType: 'AR',
   partyId: undefined,
   amount: 0,
-  openingDate: lastMonthEnd(),
+  openingDate: '',
   remark: ''
 });
 
@@ -503,11 +510,8 @@ const num = (value: ErpAmount | undefined | null): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
-/** 仓库名称 */
-const warehouseName = (warehouseId: ErpId | undefined): string => {
-  const hit = warehouseList.value.find((item) => String(item.id) === String(warehouseId));
-  return hit ? hit.name : '-';
-};
+/** 新列表行直接由后端联查仓库名称，不用首屏 options 猜测。 */
+const warehouseName = (row: StOpeningVO): string => row.warehouseName || row.warehouseCode || String(row.warehouseId);
 
 /** 往来类型中文 */
 const partyTypeLabel = (partyType?: string): string => {
@@ -525,27 +529,36 @@ const showBizError = (fallback: string) => {
 
 /* ------------------------------ 库存期初 ------------------------------ */
 
-/** 加载库存期初列表 */
+/** 库存期初列表按后端真实总数翻页，筛选改变回第一页。 */
+let stRequest = 0;
 const getStList = async () => {
+  const seq = ++stRequest;
   stLoading.value = true;
+  stFailed.value = false;
   try {
-    const res = await listStOpening(stWarehouseId.value || undefined);
-    stList.value = res.data ?? [];
+    const res = await listStOpening({ pageNum: stPageNum.value, pageSize: stPageSize.value, warehouseId: stWarehouseId.value || undefined });
+    if (seq !== stRequest) return;
+    stList.value = res.rows;
+    stTotal.value = res.total;
+    // 删除了末页唯一一条记录时回到最后一个有效页。
+    const lastPage = Math.max(1, Math.ceil(res.total / stPageSize.value));
+    if (stPageNum.value > lastPage) {
+      stPageNum.value = lastPage;
+      await getStList();
+    }
   } catch {
+    if (seq !== stRequest) return;
     stList.value = [];
+    stTotal.value = 0;
+    stFailed.value = true;
   } finally {
-    stLoading.value = false;
+    if (seq === stRequest) stLoading.value = false;
   }
 };
 
-/** 加载仓库选项 */
-const loadWarehouses = async () => {
-  try {
-    const res = await warehouseOptions();
-    warehouseList.value = res.data ?? [];
-  } catch {
-    warehouseList.value = [];
-  }
+const handleStQuery = () => {
+  stPageNum.value = 1;
+  void getStList();
 };
 
 /** 新增期初 */
@@ -620,7 +633,7 @@ const submitSt = async () => {
 const handleStConfirm = async (row: StOpeningVO) => {
   try {
     await proxy?.$modal.confirm(
-      `是否确认产品「${row.productName || row.productCode || ''}」在「${warehouseName(row.warehouseId)}」的库存期初？确认后写入期初入库流水并锁定。`
+      `是否确认产品「${row.productName || row.productCode || ''}」在「${warehouseName(row)}」的库存期初？确认后写入期初入库流水并锁定。`
     );
   } catch {
     return;
@@ -639,7 +652,7 @@ const handleStConfirm = async (row: StOpeningVO) => {
 const handleStUnconfirm = async (row: StOpeningVO) => {
   try {
     await proxy?.$modal.confirm(
-      `是否反确认产品「${row.productName || row.productCode || ''}」在「${warehouseName(row.warehouseId)}」的库存期初？反确认后回退库存并解锁。`
+      `是否反确认产品「${row.productName || row.productCode || ''}」在「${warehouseName(row)}」的库存期初？反确认后回退库存并解锁。`
     );
   } catch {
     return;
@@ -658,7 +671,7 @@ const handleStUnconfirm = async (row: StOpeningVO) => {
 const handleStDelete = async (row: StOpeningVO) => {
   try {
     await proxy?.$modal.confirm(
-      `是否删除产品「${row.productName || row.productCode || ''}」在「${warehouseName(row.warehouseId)}」的库存期初草稿？删除后不可恢复。`
+      `是否删除产品「${row.productName || row.productCode || ''}」在「${warehouseName(row)}」的库存期初草稿？删除后不可恢复。`
     );
   } catch {
     return;
@@ -670,17 +683,31 @@ const handleStDelete = async (row: StOpeningVO) => {
 
 /* ------------------------------ 往来期初 ------------------------------ */
 
-/** 加载往来期初列表 */
+/** 加载数据库往来期初页；真实 total 不从当页长度推导。 */
 const getFinList = async () => {
+  const requestId = ++finRequest;
   finLoading.value = true;
+  finFailed.value = false;
+  finList.value = [];
   try {
-    const res = await listFinOpening(finPartyType.value);
-    finList.value = res.data ?? [];
+    const res = await listFinOpeningPage({ partyType: finPartyType.value, pageNum: finPageNum.value, pageSize: finPageSize.value });
+    if (requestId !== finRequest) return;
+    finList.value = res.rows;
+    finTotal.value = Number(res.total);
   } catch {
+    if (requestId !== finRequest) return;
     finList.value = [];
+    finTotal.value = 0;
+    finFailed.value = true;
   } finally {
-    finLoading.value = false;
+    if (requestId === finRequest) finLoading.value = false;
   }
+};
+
+/** 类型筛选复位财务页码，不改变库存期初的筛选或页码。 */
+const handleFinQuery = () => {
+  finPageNum.value = 1;
+  getFinList();
 };
 
 /** 切换往来类型时清空已选单位 */
@@ -705,8 +732,8 @@ const handleFinEdit = async (row: FinOpeningVO) => {
     originPartyId: row.partyId,
     partyType: row.partyType,
     partyId: row.partyId,
-    amount: num(row.amount),
-    openingDate: row.openingDate || lastMonthEnd(),
+    amount: row.amount,
+    openingDate: row.openingDate || '',
     remark: row.remark || ''
   });
   finFormRef.value?.clearValidate();
@@ -720,6 +747,10 @@ const submitFin = async () => {
   const result = await finFormRef.value?.validate().catch(() => false);
   const valid = result === true || result === undefined;
   if (!valid) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(finForm.openingDate)) {
+    proxy?.$modal.msgWarning('请明确选择期初截止日；历史无日期记录不会自动回填');
+    return;
+  }
   if (finIdentityChanged.value) {
     try {
       await proxy?.$modal.confirm('修改往来类型或单位将新建一条期初记录，原记录保留不变，是否继续？');
@@ -732,7 +763,7 @@ const submitFin = async () => {
     const res = await saveFinOpening({
       partyType: finForm.partyType,
       partyId: finForm.partyId!,
-      amount: num(finForm.amount),
+      amount: finForm.amount,
       openingDate: finForm.openingDate,
       remark: finForm.remark
     });
@@ -750,6 +781,10 @@ const submitFin = async () => {
 
 /** 确认往来期初 */
 const handleFinConfirm = async (row: FinOpeningVO) => {
+  if (!row.openingDate) {
+    proxy?.$modal.msgWarning('请先编辑并明确选择期初截止日，再确认；历史无日期不会自动回填');
+    return;
+  }
   try {
     await proxy?.$modal.confirm(
       `是否确认「${partyTypeLabel(row.partyType)} - ${row.partyName ?? ''}」截至 ${row.openingDate ?? '—'} 的期初金额 ${formatMoney(row.amount)}？确认后写入应收应付台账并锁定。`
@@ -862,10 +897,13 @@ const handleFileSuccess = (context: SuccessContext) => {
   upload.open = false;
   uploadFiles.value = [];
   if (response.code !== 200 || !response.data) {
-    proxy?.$modal.msgError(response.msg || '导入失败，请检查文件内容');
+    proxy?.$modal.msgError(sanitizeImportMessage(response.msg) || '导入失败，请检查文件内容');
     return;
   }
-  importResult.data = response.data;
+  importResult.data = {
+    ...response.data,
+    errors: response.data.errors?.map((error) => ({ ...error, message: sanitizeImportMessage(error.message) })) ?? []
+  };
   importResult.visible = true;
   if (target === 'stock') {
     getStList();
@@ -878,7 +916,7 @@ const handleFileSuccess = (context: SuccessContext) => {
 const handleFileError = (context: UploadFailContext) => {
   upload.isUploading = false;
   const response = (context?.response ?? {}) as ImportUploadResponse;
-  proxy?.$modal.msgError(response.msg || '导入失败，请检查网络或文件');
+  proxy?.$modal.msgError(sanitizeImportMessage(response.msg) || '导入失败，请检查网络或文件');
 };
 
 const submitFileForm = () => {
@@ -888,6 +926,8 @@ const submitFileForm = () => {
 onMounted(() => {
   getStList();
   getFinList();
-  loadWarehouses();
+});
+onBeforeUnmount(() => {
+  ++finRequest;
 });
 </script>

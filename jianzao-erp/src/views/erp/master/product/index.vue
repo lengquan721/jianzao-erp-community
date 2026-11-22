@@ -10,23 +10,23 @@
                   <t-input v-model="queryParams.keyword" placeholder="编码/名称/规格" clearable class="query-w-md" @enter="handleQuery" />
                 </t-form-item>
                 <t-form-item label="商品分类" name="categoryId">
-                  <t-select
+                  <ErpPagedSelect
                     v-model="queryParams.categoryId"
                     placeholder="全部分类"
-                    clearable
-                    filterable
                     class="query-w-md"
-                    :options="categorySelectOptions"
+                    :fetch-page="productCategoryOptions"
+                    :fetch-by-ids="productCategoryOptionsByIds"
+                    :label="nameLabel"
                   />
                 </t-form-item>
                 <t-form-item label="所属供应商" name="supplierId">
-                  <t-select
+                  <ErpPagedSelect
                     v-model="queryParams.supplierId"
                     placeholder="全部供应商"
-                    clearable
-                    filterable
                     class="query-w-md"
-                    :options="supplierSelectOptions"
+                    :fetch-page="supplierOptions"
+                    :fetch-by-ids="supplierOptionsByIds"
+                    :label="nameLabel"
                   />
                 </t-form-item>
                 <t-form-item label="类型" name="type">
@@ -330,13 +330,7 @@
 
         <t-drawer v-model:visible="dialog.visible" :header="dialog.title" size="720px" attach="body">
           <t-form ref="productFormRef" :data="form" :rules="productRules" label-align="top">
-            <ProductFormFields
-              v-model="form"
-              :category-options="formCategoryOptions"
-              :supplier-options="supplierList"
-              show-add-category
-              @add-category="openCategoryDialog"
-            />
+            <ProductFormFields v-model="form" active-category-only show-add-category @add-category="openCategoryDialog" />
           </t-form>
           <template #footer>
             <div class="flex items-center justify-end gap-2">
@@ -399,24 +393,20 @@ import {
   delProduct,
   getRecipe,
   saveRecipe,
+  listAllProductCategories,
   productCategoryOptions,
+  productCategoryOptionsByIds,
   addProductCategory,
   updateProductCategory,
   delProductCategory,
-  supplierOptions
+  supplierOptions,
+  supplierOptionsByIds
 } from '@/api/erp/master';
 import type { ErpImportResult } from '@/api/erp/master';
-import { listStockBalances } from '@/api/erp/stock';
+import { listStockQuantities } from '@/api/erp/stock';
 import { ERP_PRODUCT_TYPE, ERP_QTY_SCALE_OPTIONS } from '@/api/erp/enums';
-import type {
-  ErpId,
-  ErpProductCategoryForm,
-  ErpProductCategoryVO,
-  ErpProductForm,
-  ErpProductQuery,
-  ErpProductVO,
-  ErpSupplierVO
-} from '@/api/erp/types';
+import type { ErpId, ErpProductCategoryForm, ErpProductCategoryVO, ErpProductForm, ErpProductQuery, ErpProductVO } from '@/api/erp/types';
+import ErpPagedSelect from '@/components/erp/ErpPagedSelect.vue';
 import { formatMoney } from '@/utils/erp/calc';
 import { checkPermi } from '@/utils/permission';
 import { globalHeaders } from '@/utils/request';
@@ -487,13 +477,9 @@ const queryFormRef = ref<any>();
 /** t-upload 实例只提供 uploadFiles()，没有 EP 的 submit()/clearFiles() */
 const uploadRef = ref<any>();
 
-/** 分类与供应商下拉数据 */
+/** 分类字典仅供完整分组与维护表使用；供应商不再全量加载，由筛选/表单独立远程分页。 */
 const categoryList = ref<ErpProductCategoryVO[]>([]);
-const supplierList = ref<ErpSupplierVO[]>([]);
-
-/** 搜索区下拉：t-select 只接受 {label,value} 数组 */
-const categorySelectOptions = computed(() => categoryList.value.map((item) => ({ label: item.name, value: item.id })));
-const supplierSelectOptions = computed(() => supplierList.value.map((item) => ({ label: item.name, value: item.id })));
+const nameLabel = (item: { id: ErpId; name?: string }) => item.name ?? String(item.id);
 /** 类型下拉：ERP_PRODUCT_TYPE 是 Record，t-select 内部按数组 map，必须转数组 */
 const productTypeOptions = Object.entries(ERP_PRODUCT_TYPE).map(([value, item]) => ({ label: item.label, value }));
 const productStatusOptions = [
@@ -637,11 +623,6 @@ const productRules: Record<string, any> = {
   type: [{ required: true, message: '类型不能为空', trigger: 'change' }]
 };
 
-/** 表单分类下拉：停用分类不可再选，但保留当前商品的已有分类，避免编辑时值被清空 */
-const formCategoryOptions = computed(() =>
-  categoryList.value.filter((item) => item.status === 1 || String(item.id) === String(form.value.categoryId ?? ''))
-);
-
 /** 按分类分组：未分类（含分类已删除）固定排最后，组内保持后端 sort/code 顺序 */
 const buildGroups = (rows: ErpProductVO[]): ProductTableRow[] => {
   const groups = new Map<string, ProductGroupRow>();
@@ -713,13 +694,6 @@ const getList = async () => {
   } finally {
     loading.value = false;
   }
-};
-
-/** 加载分类与供应商下拉数据：单个接口无权限时留空，不阻断商品列表 */
-const loadOptions = async () => {
-  const [categoryRes, supplierRes] = await Promise.allSettled([productCategoryOptions(), supplierOptions()]);
-  categoryList.value = categoryRes.status === 'fulfilled' ? (categoryRes.value.data ?? []) : [];
-  supplierList.value = supplierRes.status === 'fulfilled' ? (supplierRes.value.data ?? []) : [];
 };
 
 /** 搜索：重新从分组模式探测（可能在筛选后回到分组视图） */
@@ -801,7 +775,6 @@ const submitForm = async () => {
   form.value.id ? await updateProduct({ ...form.value, costPrice: undefined }) : await addProduct(form.value);
   proxy?.$modal.msgSuccess('操作成功');
   dialog.visible = false;
-  await loadOptions();
   await getList();
 };
 
@@ -830,8 +803,7 @@ const openCategoryDialog = async () => {
 const loadCategoryList = async () => {
   categoryLoading.value = true;
   try {
-    const res = await productCategoryOptions();
-    categoryList.value = res.data ?? [];
+    categoryList.value = await listAllProductCategories();
   } finally {
     categoryLoading.value = false;
   }
@@ -875,20 +847,22 @@ const removeCategory = async (row: ErpProductCategoryVO) => {
   await getList();
 };
 
-/** 加载库存余额 */
-const loadStock = async () => {
-  try {
-    const res = await listStockBalances({});
-    const map: Record<string, string> = {};
-    (res.data ?? []).forEach((item) => {
-      const key = String(item.productId);
-      map[key] = (map[key] ? Number(map[key]) + Number(item.qty ?? 0) : Number(item.qty ?? 0)).toFixed(3);
-    });
-    stockMap.value = map;
-  } catch {
+/** 配比只查当前原料 ID 的全仓数量（含新增/替换的原料）；空结果是未知，不是 0。 */
+watch(
+  () => (recipeDialog.visible ? recipeRows.value.flatMap(({ materialId }) => (materialId == null ? [] : [materialId])) : []),
+  async (materialIds, _previous, onCleanup) => {
     stockMap.value = {};
+    if (!materialIds.length || !checkPermi(['erp:stock:list'])) return;
+    let current = true;
+    onCleanup(() => (current = false));
+    try {
+      const quantities = await listStockQuantities(materialIds);
+      if (current) stockMap.value = Object.fromEntries(quantities.map(({ productId, qty }) => [String(productId), Number(qty).toFixed(3)]));
+    } catch {
+      // 库存读取失败不影响编辑配比。
+    }
   }
-};
+);
 
 const getStockText = (materialId?: ErpId) => {
   if (materialId == null) return '-';
@@ -906,8 +880,8 @@ const handleRecipe = async (row: ErpProductVO) => {
   recipeDialog.title = `配比 - ${row.name}`;
   recipeDialog.visible = true;
   recipeRows.value = [];
-  await loadStock();
   const res = await getRecipe(row.id);
+  if (String(recipeProductId.value) !== String(row.id) || !recipeDialog.visible) return;
   recipeRows.value = (res.data ?? []).map((item) => ({
     __key: nextRecipeKey(),
     materialId: item.materialId,
@@ -992,8 +966,5 @@ const submitFileForm = () => {
   uploadRef.value?.uploadFiles();
 };
 
-onMounted(async () => {
-  await loadOptions();
-  getList();
-});
+onMounted(getList);
 </script>

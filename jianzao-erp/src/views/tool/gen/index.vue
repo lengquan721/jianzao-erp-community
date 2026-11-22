@@ -182,10 +182,7 @@ const dialog = reactive<DialogOption>({
 });
 
 /** 数据源下拉：t-select 用 { label, value } 数组，含「全部」空值项 */
-const dataNameOptions = computed(() => [
-  { label: '全部', value: '' },
-  ...dataNameList.value.map((item) => ({ label: item, value: item }))
-]);
+const dataNameOptions = computed(() => [{ label: '全部', value: '' }, ...dataNameList.value.map((item) => ({ label: item, value: item }))]);
 
 /** 表集合列表列配置：t-table 用 columns 数组，插槽名与 cell 字符串同名 */
 const tableColumns: any[] = [

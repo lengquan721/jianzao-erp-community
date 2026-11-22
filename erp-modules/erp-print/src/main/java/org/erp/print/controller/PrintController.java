@@ -8,9 +8,12 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.erp.print.domain.bo.PrintTemplateBo;
+import org.erp.print.domain.design.DesignSchema;
 import org.erp.print.domain.vo.PrintTemplateVo;
 import org.erp.print.service.IPrintService;
 import org.erp.print.service.IPrintTemplateService;
+import org.erp.print.service.impl.DesignPresets;
+import org.erp.print.service.impl.PrintVariables;
 import org.springframework.http.MediaType;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -23,6 +26,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 打印模板管理 + 渲染（DOC/12 §9）
  */
@@ -34,6 +40,31 @@ public class PrintController extends BaseController {
 
     private final IPrintTemplateService templateService;
     private final IPrintService printService;
+
+    /**
+     * 设计器变量字典：按场景返回可用字段、表格数据源与列定义
+     */
+    @SaCheckPermission("erp:print:template:list")
+    @GetMapping("/design/variables")
+    public R<Map<String, Object>> variables(@RequestParam(required = false) String scene) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("fields", PrintVariables.of(scene));
+        data.put("tableSources", PrintVariables.tableSources(scene));
+        data.put("columns", Map.of(
+            "items", PrintVariables.columns("items"),
+            "statement.items", PrintVariables.columns("statement.items")
+        ));
+        return R.ok(data);
+    }
+
+    /**
+     * 设计器预置版式：按场景返回组件树，作为新建模板的起点
+     */
+    @SaCheckPermission("erp:print:template:list")
+    @GetMapping("/design/presets")
+    public R<DesignSchema> presets(@RequestParam(required = false) String scene) {
+        return R.ok(DesignPresets.of(scene));
+    }
 
     /**
      * 模板列表
@@ -107,7 +138,21 @@ public class PrintController extends BaseController {
     }
 
     /**
-     * 送货单渲染（copies 为打印份数/联单数，默认 1）
+     * 预览设计器组件树：后端编译成 HTML 后用示例数据渲染
+     *
+     * <p>设计器不需要把组件树先落库再预览，也不需要在浏览器里拼 HTML。
+     */
+    @SaCheckPermission("erp:print:template:preview")
+    @PostMapping(value = "/preview/design", produces = MediaType.TEXT_HTML_VALUE)
+    public String previewDesign(@RequestParam String scene,
+                                @RequestBody String schemaJson,
+                                @RequestParam(defaultValue = "false") boolean showProfit) {
+        return printService.previewDesign(scene, schemaJson, showProfit);
+    }
+
+    /**
+     * 送货单渲染（copies 为打印份数/联单数，默认 1）。
+     * showProfit 默认 false；true 还须由服务层校验独立权限 erp:print:profit，普通渲染权限不替代它。
      */
     @SaCheckPermission("erp:print:render")
     @GetMapping(value = "/SALE_DELIVERY/{saleId}", produces = MediaType.TEXT_HTML_VALUE)
@@ -129,6 +174,16 @@ public class PrintController extends BaseController {
                             @RequestParam(required = false) String endDate,
                             @RequestParam(required = false) Long templateId) {
         return printService.renderStatement(customerId, month, startDate, endDate, templateId);
+    }
+
+    /**
+     * 采购入库单渲染
+     */
+    @SaCheckPermission("erp:print:render")
+    @GetMapping(value = "/PURCHASE_IN/{purchaseId}", produces = MediaType.TEXT_HTML_VALUE)
+    public String purchaseIn(@PathVariable Long purchaseId,
+                             @RequestParam(required = false) Long templateId) {
+        return printService.renderPurchaseIn(purchaseId, templateId);
     }
 
     /**

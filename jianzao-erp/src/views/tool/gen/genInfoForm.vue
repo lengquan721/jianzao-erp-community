@@ -74,7 +74,6 @@
           />
         </t-form-item>
       </t-col>
-
     </t-row>
 
     <template v-if="info.tplCategory == 'tree'">
@@ -184,9 +183,7 @@ const columnOptions = (columns: any[]) =>
 const treeCodeOptions = computed(() => columnOptions(props.info.columns));
 const treeParentCodeOptions = computed(() => columnOptions(infoForm.value.columns));
 const treeNameOptions = computed(() => columnOptions(props.info.columns));
-const subTableNameOptions = computed(() =>
-  table.value.map((t: any) => ({ label: t.tableName + '：' + t.tableComment, value: t.tableName }))
-);
+const subTableNameOptions = computed(() => table.value.map((t: any) => ({ label: t.tableName + '：' + t.tableComment, value: t.tableName })));
 const subTableFkNameOptions = computed(() => columnOptions(subColumns.value));
 
 // 表单校验：TDesign 的 rules 形状与 EP 不兼容，类型按约定写 Record<string, any>

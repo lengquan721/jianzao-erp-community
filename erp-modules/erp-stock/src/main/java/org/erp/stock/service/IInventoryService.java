@@ -1,9 +1,12 @@
 package org.erp.stock.service;
 
-import org.erp.stock.domain.vo.ErpStockLogVo;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.erp.stock.domain.vo.ErpStockLogPageVo;
+import org.erp.stock.domain.vo.ErpStockQuantityVo;
 import org.erp.stock.domain.vo.ErpStockVo;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -16,10 +19,10 @@ public interface IInventoryService {
     /**
      * 出库（条件扣减，防超卖）。库存不足抛 40901。
      *
-     * @param unitCost 出库成本快照（按当前 avg_cost）
+     * @return 写入流水的出库单位成本（出库仓锁定行的当前 avg_cost），供同单据冻结成本
      */
-    void outbound(String bizType, String bizNo, Long bizId, Long productId, Long warehouseId,
-                  BigDecimal qty, String partnerType, Long partnerId, Date bizDate, int seq);
+    BigDecimal outbound(String bizType, String bizNo, Long bizId, Long productId, Long warehouseId,
+                        BigDecimal qty, String partnerType, Long partnerId, Date bizDate, int seq);
 
     /**
      * 出库（条件扣减，防超卖），成本快照由调用方指定（DOC/24 §2.6：退货按原单行成本回冲）。
@@ -65,7 +68,8 @@ public interface IInventoryService {
 
 
     /**
-     * 重放指定产品+仓库全部流水，重算 qty 与 avg_cost（D2 唯一算法）。
+     * 持库存行锁重演全部历史数量并重算 avg_cost（D2 算法），数量快照仍由原库存变更更新。
+     * 没有逐笔/并发证据的检查点不启用，不允许锁外异步重算。
      */
     void replayAvgCost(Long productId, Long warehouseId);
 
@@ -73,14 +77,17 @@ public interface IInventoryService {
 
     BigDecimal getAvgCost(Long productId, Long warehouseId);
 
-    List<ErpStockVo> listStock(String keyword, String type);
+    TableDataInfo<ErpStockVo> pageStock(String keyword, String type, int pageNum, int pageSize);
+
+    List<ErpStockQuantityVo> quantityTotals(List<Long> ids);
 
     /**
      * 单产品库存快照（主仓口径：最小 warehouseId），含产品编码/名称/规格/单位/类型。
      */
     ErpStockVo snapshot(Long productId);
 
-    List<ErpStockLogVo> listLogs(Long productId);
+    ErpStockLogPageVo pageLogs(Long productId, LocalDate startDate, LocalDate endDate, int pageSize,
+                              LocalDate beforeDate, Long beforeId);
 
     /**
      * 按当前 avg_cost 快照出库成本。

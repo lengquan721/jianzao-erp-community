@@ -10,8 +10,12 @@
           <t-input v-model="queryParams.phonenumber" placeholder="请输入手机号码" clearable class="query-w-md" @enter="handleQuery" />
         </t-form-item>
         <div class="erp-filter-actions">
-          <t-button theme="primary" @click="handleQuery"><template #icon><SearchIcon /></template>搜索</t-button>
-          <t-button theme="default" variant="outline" @click="resetQuery"><template #icon><RefreshIcon /></template>重置</t-button>
+          <t-button theme="primary" @click="handleQuery"
+            ><template #icon><SearchIcon /></template>搜索</t-button
+          >
+          <t-button theme="default" variant="outline" @click="resetQuery"
+            ><template #icon><RefreshIcon /></template>重置</t-button
+          >
         </div>
       </t-form>
       <t-table

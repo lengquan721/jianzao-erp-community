@@ -34,12 +34,13 @@ public class FinReceiptBo {
      */
     private Long accountId;
 
-    private String remark;
-
     /**
-     * 红字标志（DOC/24）：仅退货退款内部链路使用，普通收款页面不传
+     * 保留旧客户端字段以兼容反序列化；普通收款 API 明确拒绝 true，退款必须走受控内部入口。
      */
+    @Deprecated
     private Boolean negative;
+
+    private String remark;
 
     /**
      * true = 保存并确认（落核销）
